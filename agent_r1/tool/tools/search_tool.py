@@ -44,7 +44,7 @@ class SearchTool(Tool):
         }
         
         super().__init__(name, description, parameters)
-        print(f"[DEBUG] EMBEDDINGS LOADING")
+        print("[DEBUG] EMBEDDINGS LOADING")
         
         # Get the absolute path to the data directory
         current_dir = os.path.dirname(os.path.abspath(__file__))

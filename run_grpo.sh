@@ -5,7 +5,7 @@ export EXPERIMENT_NAME=grpo
 export HYDRA_FULL_ERROR=1
 export CUDA_LAUNCH_BLOCKING=1
 
-python3 -m verl.trainer.main_ppo \
+python3 -m agent_r1.src.main_agent \
     algorithm.adv_estimator=grpo \
     data.train_files=./data/hotpotqa/train.parquet \
     data.val_files=./data/hotpotqa/validation.parquet \

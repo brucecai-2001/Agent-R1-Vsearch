@@ -14,23 +14,21 @@
 """
 Note that we don't combine the main with ray_trainer as ray_trainer is used by other main.
 """
+from .agent_ray_trainer import RayAgentTrainer
+
+from agent_r1.tool import ToolEnv
+from agent_r1.tool.tools import _default_tools
+
+import ray
+import hydra
 
 from verl import DataProto
+from .reward_score import _default_compute_score_format, _default_compute_score_answer, _default_compute_score_format_answer
 import torch
-from verl.utils.reward_score import gsm8k, math
-from verl.trainer.ppo.ray_trainer import RayPPOTrainer
-
-
-def _select_rm_score_fn(data_source):
-    if data_source == 'openai/gsm8k':
-        return gsm8k.compute_score
-    elif data_source == 'lighteval/MATH':
-        return math.compute_score
-    else:
-        raise NotImplementedError
-
 
 class RewardManager():
+    """The reward manager.
+    """
 
     def __init__(self, tokenizer, num_examine) -> None:
         self.tokenizer = tokenizer
@@ -44,6 +42,8 @@ class RewardManager():
             return data.batch['rm_scores']
 
         reward_tensor = torch.zeros_like(data.batch['responses'], dtype=torch.float32)
+        answer_lst = []
+        format_lst = []
 
         already_print_data_sources = {}
 
@@ -55,23 +55,34 @@ class RewardManager():
             prompt_length = prompt_ids.shape[-1]
 
             valid_prompt_length = data_item.batch['attention_mask'][:prompt_length].sum()
+
             valid_prompt_ids = prompt_ids[-valid_prompt_length:]
 
             response_ids = data_item.batch['responses']
+
             valid_response_length = data_item.batch['attention_mask'][prompt_length:].sum()
-            valid_response_ids = response_ids[:valid_response_length]
+
+            valid_response_ids = response_ids[:valid_response_length].long()
 
             # decode
             sequences = torch.cat((valid_prompt_ids, valid_response_ids))
-            sequences_str = self.tokenizer.decode(sequences)
+
+            sequences_str = self.tokenizer.decode(sequences, skip_special_tokens=False)
+            pad_token_id = self.tokenizer.pad_token_id
+            sequences_str = sequences_str.split(self.tokenizer.decode([pad_token_id]))[0]
 
             ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
 
             # select rm_score
             data_source = data_item.non_tensor_batch['data_source']
-            compute_score_fn = _select_rm_score_fn(data_source)
 
-            score = compute_score_fn(solution_str=sequences_str, ground_truth=ground_truth)
+            score = _default_compute_score_format_answer(data_source=data_source, solution_str=sequences_str, ground_truth=ground_truth)
+            answer_score = _default_compute_score_answer(data_source=data_source, solution_str=sequences_str, ground_truth=ground_truth)
+            format_score = _default_compute_score_format(data_source=data_source, solution_str=sequences_str)
+
+            answer_lst.append(answer_score)
+            format_lst.append(format_score)
+
             reward_tensor[i, valid_response_length - 1] = score
 
             if data_source not in already_print_data_sources:
@@ -79,30 +90,35 @@ class RewardManager():
 
             if already_print_data_sources[data_source] < self.num_examine:
                 already_print_data_sources[data_source] += 1
-                print(sequences_str)
+                print("[prompt+response]", sequences_str)
+                print("[ground_truth]", ground_truth)
+                print("[score]", score)
 
-        return reward_tensor
+        return reward_tensor, answer_lst, format_lst
 
-
-import ray
-import hydra
-from split_monkey_patch import fit
-
-
-@hydra.main(config_path='config', config_name='ppo_trainer_split', version_base=None)
+@hydra.main(config_path='config', config_name='agent_trainer', version_base=None)
 def main(config):
+    run_agent(config)
+
+
+def run_agent(config) -> None:
+
     if not ray.is_initialized():
         # this is for local ray cluster
-        ray.init(runtime_env={'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN'}})
+        ray.init(runtime_env={
+            'env_vars': {
+                'TOKENIZERS_PARALLELISM': 'true',
+                'NCCL_DEBUG': 'WARN',
+                'VLLM_LOGGING_LEVEL': 'WARN'
+            }
+        })
 
     ray.get(main_task.remote(config))
 
 
-@ray.remote
+@ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
 def main_task(config):
     from verl.utils.fs import copy_to_local
-    from transformers import AutoTokenizer
-
     # print initial config
     from pprint import pprint
     from omegaconf import OmegaConf
@@ -113,8 +129,9 @@ def main_task(config):
     local_path = copy_to_local(config.actor_rollout_ref.model.path)
 
     # instantiate tokenizer
-    from verl.utils import hf_tokenizer
+    from verl.utils import hf_tokenizer, hf_processor
     tokenizer = hf_tokenizer(local_path)
+    processor = hf_processor(local_path, use_fast=True)  # used for multimodal LLM, could be none
 
     # define worker classes
     if config.actor_rollout_ref.actor.strategy == 'fsdp':
@@ -132,7 +149,7 @@ def main_task(config):
     else:
         raise NotImplementedError
 
-    from verl.trainer.ppo.ray_trainer import ResourcePoolManager, Role
+    from .agent_ray_trainer import ResourcePoolManager, Role
 
     role_worker_mapping = {
         Role.ActorRollout: ray.remote(ActorRolloutRefWorker),
@@ -140,24 +157,14 @@ def main_task(config):
         Role.RefPolicy: ray.remote(ActorRolloutRefWorker)
     }
 
-    # NOTE: initialze two resource pool
-    actor_rollout_ref_pool_id = 'actor_rollout_ref_pool'
-    critic_pool_id = 'critic_pool'
-    if config.trainer.nnodes // 2 == 0 and config.trainer.n_gpus_per_node // 2 > 0:
-        resource_pool_spec = {
-            actor_rollout_ref_pool_id: [config.trainer.n_gpus_per_node // 2] * config.trainer.nnodes,
-            critic_pool_id: [config.trainer.n_gpus_per_node // 2] * config.trainer.nnodes,
-        }
-    else:
-        resource_pool_spec = {
-            actor_rollout_ref_pool_id: [config.trainer.n_gpus_per_node] * (config.trainer.nnodes // 2),
-            critic_pool_id: [config.trainer.n_gpus_per_node] * (config.trainer.nnodes // 2),
-        }
-    print(f'resource_pool_spec: {resource_pool_spec}')
+    global_pool_id = 'global_pool'
+    resource_pool_spec = {
+        global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+    }
     mapping = {
-        Role.ActorRollout: actor_rollout_ref_pool_id,
-        Role.Critic: critic_pool_id,
-        Role.RefPolicy: actor_rollout_ref_pool_id,
+        Role.ActorRollout: global_pool_id,
+        Role.Critic: global_pool_id,
+        Role.RefPolicy: global_pool_id,
     }
 
     # we should adopt a multi-source reward function here
@@ -174,23 +181,22 @@ def main_task(config):
         else:
             raise NotImplementedError
         role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
-        mapping[Role.RewardModel] = critic_pool_id
-
-    reward_fn = RewardManager(tokenizer=tokenizer, num_examine=0)
-
-    # Note that we always use function-based RM for validation
-    val_reward_fn = RewardManager(tokenizer=tokenizer, num_examine=1)
+        mapping[Role.RewardModel] = global_pool_id
 
     resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
 
-    RayPPOTrainer.fit = fit
-    trainer = RayPPOTrainer(config=config,
+    tools = _default_tools(config.tool.env)
+    env = ToolEnv(tools=tools, max_turns=config.tool.max_turns)
+
+    trainer = RayAgentTrainer(config=config,
                             tokenizer=tokenizer,
+                            processor=processor,
                             role_worker_mapping=role_worker_mapping,
                             resource_pool_manager=resource_pool_manager,
                             ray_worker_group_cls=ray_worker_group_cls,
-                            reward_fn=reward_fn,
-                            val_reward_fn=val_reward_fn)
+                            reward_fn=RewardManager(tokenizer=tokenizer, num_examine=0),
+                            val_reward_fn=RewardManager(tokenizer=tokenizer, num_examine=1),
+                            env=env)
     trainer.init_workers()
     trainer.fit()
 

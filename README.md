@@ -1,25 +1,34 @@
 <h1 align="center"> Agent-R1: Training Powerful LLM Agents with End-to-End Reinforcement Learning </h1>
 
-<p align="center"><img src="./image/agent.png" width="800px" alt="RICO Framework" /></p>
+<p align="center"><img src="./image/agent.png" width="800px" alt="Agent vs Workflow" /></p>
 
-**2025.3.18 Update:** We have added support for **process rewards**! You can now assign rewards for each tool call based on its effectiveness. To balance process rewards with outcome rewards, we implemented reward normalization inspired by [PRIME](https://github.com/PRIME-RL/PRIME).
+## News
 
+- [2025.3.18] Added comprehensive **multi-modal support**! Agent-R1 now seamlessly integrates with vision-language models (VLMs), enabling agents to process and reason with both text and visual inputs in rich multi-modal environments.
+
+- [2025.3.18] Refactored our codebase to improve maintainability! We've converted verl from a static folder to a **git submodule** and separated our custom code extensions. This makes it easier to update `verl` and understand the project structure.
+  > **Important:** After pulling this update, you'll need to reinitialize your environment. Run `git submodule update --init --recursive` and reinstall verl locally from this directory.
+
+- [2025.3.16] Added support for **process rewards**! You can now assign rewards for each tool call based on its effectiveness. To balance process rewards with outcome rewards, we implemented reward normalization inspired by [PRIME](https://github.com/PRIME-RL/PRIME).
 ## Overview
 
 **Agent-R1** is an open-source framework designed to accelerate research and development at this critical intersection. Our framework employs **End-to-End** reinforcement learning to train agents in specific environments. Developers need only define domain-specific tools and reward functions to extend Agent-R1 to their unique use cases, eliminating the need for complex workflow engineering. We hope our modest contribution can benefit the open-source community, making it easier for researchers and developers to create and explore agents in their own domains, collectively advancing the development of autonomous agents. For more details on the algorithm, see [algorithm doc](https://github.com/0russwest0/Agent-R1/blob/main/docs/algorithm/algorithm.md).
+
+> **Also check out [Awesome-Agent-RL](https://github.com/0russwest0/Awesome-Agent-RL)**: Our curated collection of papers and resources on unlocking the potential of Agents through Reinforcement Learning.
 
 <p align="center"><img src="./image/framework.png" width="800px" alt="RICO Framework" /></p>
 
 ## Key Features
 
 - **Multi-turn Tool Calling**: End-to-end reinforcement learning on complete interaction trajectories, allowing agents to learn from sequences of actions
+- **Multi-tool Coordination**: Train agents to effectively coordinate and use multiple tools together to solve complex tasks
+- **Process Rewards**: Assign rewards for each tool call based on its effectiveness, balanced with outcome rewards through normalization
 - **Custom Tools and Environments**: Compatible with mainstream LLM tool calling formats, making it easy to extend with your own tools and scenarios
-- **Multiple RL Algorithms**: Supports diverse reinforcement learning approaches including PPO, GRPO, and REINFORCE++
-- **Reasoning before Action**: Jointly optimize reasoning and action strategies over entire trajectories.
+- **Multiple RL Algorithms**: Supports diverse reinforcement learning approaches including `PPO`, `GRPO`, and `REINFORCE++`
+- **Multi-modal Support**: Compatible with vision-language models (VLMs) and multi-modal reinforcement learning
 
 ## Upcoming Features
 
-- **Immediate Action Rewards**: Per-action reward mechanisms to complement trajectory-level reinforcement
 - **Expanded Model Support**: Integration with more foundation models beyond the currently supported Qwen
 - **Additional Use Cases**: More example implementations across diverse scenarios and domains
 
@@ -67,7 +76,7 @@ We welcome all forms of feedback! Please raise an issue for bugs, questions, or 
 [**Jie Ouyang**\*](https://github.com/0russwest0), [**Ruiran Yan**\*](https://github.com/RuiranYan), [**Yucong Luo**\*](https://github.com/GodFire66666), Zirui Liu, Shuo Yu, Daoyu Wang.
 
 ## Acknowledgements  
-We extend our gratitude to [DeepSeek](https://github.com/deepseek-ai/DeepSeek-R1) for providing the DeepSeek-R1 model and inspiring ideas. We are also thankful to the [veRL](https://github.com/volcengine/verl) team for their robust infrastructure support. Additionally, we acknowledge the [RAGEN](https://github.com/ZihanWang314/ragen) team for their groundbreaking discoveries, which significantly influenced our early exploration. Lastly, we deeply appreciate the insightful discussions and contributions from Jie Ouyang, Ruiran Yan, and Yucong Luo.
+We extend our gratitude to [DeepSeek](https://github.com/deepseek-ai/DeepSeek-R1) for providing the DeepSeek-R1 model and inspiring ideas. We are also thankful to the [veRL](https://github.com/volcengine/verl) team for their robust infrastructure support. Additionally, we acknowledge the [RAGEN](https://github.com/ZihanWang314/ragen) team for their groundbreaking discoveries, which significantly influenced our early exploration. Lastly, we deeply appreciate the insightful discussions and contributions from Jie Ouyang, Ruiran Yan, Yucong Luo, Zirui Liu, Shuo Yu and Daoyu Wang.
 
 ## Citation
 **Agent-R1**
@@ -78,16 +87,5 @@ We extend our gratitude to [DeepSeek](https://github.com/deepseek-ai/DeepSeek-R1
   year         = {2025},
   organization = {GitHub},
   url          = {https://github.com/0russwest0/Agent-R1},
-}
-```
-
-**Awesome-Agent-RL**
-```md
-@misc{Awesome-Agent-RL
-  author       = {Jie Ouyang, Daoyu Wang, Shuo Yu},
-  title        = {Awesome Agent Reinforcement Learning},
-  year         = {2025},
-  organization = {GitHub},
-  url          = {https://github.com/0russwest0/Awesome-Agent-RL},
 }
 ```
