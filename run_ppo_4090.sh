@@ -1,6 +1,6 @@
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export BASE_MODEL='/data/wdy/Downloads/models/Qwen/Qwen2.5-0.5B-Instruct'
-export PROJECT_NAME='hotpotqa_qwen2.5-0.5b-instruct'
+export PROJECT_NAME='hotpotqa_qwen2.5-0.5b-instruct-bs128-mb32-gb4'
 export EXPERIMENT_NAME=ppo
 export HYDRA_FULL_ERROR=1
 export CUDA_LAUNCH_BLOCKING=1
@@ -10,7 +10,7 @@ export WANDB_API_KEY=3212af356ff607cf97c85d62064e0fe6e799bc21
 python3 -m agent_r1.src.main_agent \
     data.train_files=./data/hotpotqa/train.parquet \
     data.val_files=./data/hotpotqa/validation.parquet \
-    data.train_batch_size=32 \
+    data.train_batch_size=128 \
     data.max_prompt_length=4096 \
     data.max_response_length=4096 \
     data.max_start_length=4096 \
@@ -44,7 +44,7 @@ python3 -m agent_r1.src.main_agent \
     trainer.experiment_name=$EXPERIMENT_NAME \
     trainer.n_gpus_per_node=2 \
     trainer.nnodes=1 \
-    trainer.save_freq=-1 \
+    trainer.save_freq=20 \
     trainer.test_freq=10 \
     trainer.total_epochs=1 \
     trainer.val_before_train=True \
