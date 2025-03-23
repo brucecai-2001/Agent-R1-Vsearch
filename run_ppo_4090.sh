@@ -1,10 +1,10 @@
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export BASE_MODEL='/data/wdy/Downloads/models/Qwen/Qwen2.5-0.5B-Instruct'
 export PROJECT_NAME='hotpotqa_qwen2.5-0.5b-instruct-bs128-mb32-gb4'
-export EXPERIMENT_NAME=ppo
+export EXPERIMENT_NAME=ppo-new-script
 export HYDRA_FULL_ERROR=1
 export CUDA_LAUNCH_BLOCKING=1
-export CUDA_VISIBLE_DEVICES=2,3
+export CUDA_VISIBLE_DEVICES=1,2
 export WANDB_API_KEY=3212af356ff607cf97c85d62064e0fe6e799bc21
 
 python3 -m agent_r1.src.main_agent \
