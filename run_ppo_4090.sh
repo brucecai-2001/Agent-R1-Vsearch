@@ -1,7 +1,7 @@
 export VLLM_ATTENTION_BACKEND=XFORMERS
 export BASE_MODEL='/data/wdy/Downloads/models/Qwen/Qwen2.5-0.5B-Instruct'
-export PROJECT_NAME='hotpotqa_qwen2.5-0.5b-instruct-bs128-mb32-gb4'
-export EXPERIMENT_NAME=ppo-new-script
+export PROJECT_NAME='hotpotqa_qwen2.5-0.5b-instruct-bs128-mb16-gb4'
+export EXPERIMENT_NAME=ppo-new-reward
 export HYDRA_FULL_ERROR=1
 export CUDA_LAUNCH_BLOCKING=1
 export CUDA_VISIBLE_DEVICES=1,2

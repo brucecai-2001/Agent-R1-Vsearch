@@ -360,6 +360,10 @@ def save_results(results: List[Dict[str, Any]], output_file: str):
             return str(obj)
 
     print("Saving inference results...")
+    
+    # 确保文件所在目录存在
+    os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=4, ensure_ascii=False, default=custom_serializer)
     print(f"All inference results have been saved to {output_file}")
