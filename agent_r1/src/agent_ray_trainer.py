@@ -24,6 +24,7 @@ from enum import Enum
 from pprint import pprint
 from typing import Type, Dict, Tuple
 from copy import deepcopy
+from tqdm import tqdm
 import re
 
 import ray
@@ -35,17 +36,17 @@ from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 from verl.single_controller.base import Worker
 from verl.single_controller.ray import RayResourcePool, RayWorkerGroup, RayClassWithInitArgs
 from verl.single_controller.ray.base import create_colocated_worker_cls
-from verl.trainer.ppo import core_algos
-from .metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics, reduce_metrics
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.checkpoint.checkpoint_manager import find_latest_ckpt_path
-from .agent_rl_dataset import ToolRLDataset, collate_fn
 from verl.utils.tracking import ValidationGenerationsLogger
 from torch.utils.data import RandomSampler, SequentialSampler
 from torchdata.stateful_dataloader import StatefulDataLoader
 
 from agent_r1.llm_agent.generation import ToolGenerationManager, ToolGenerationConfig
 from agent_r1.tool.tool_env import ToolEnv
+from agent_r1.src import core_algos
+from agent_r1.src.agent_rl_dataset import ToolRLDataset, collate_fn
+from agent_r1.src.metric_utils import compute_data_metrics, compute_throughout_metrics, compute_timing_metrics, reduce_metrics
 
 WorkerType = Type[Worker]
 
@@ -145,19 +146,24 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
     attention_mask = data.batch['attention_mask']
     response_mask = attention_mask[:, -response_length:]
 
+    if 'action_mask' in data.batch:
+        action_mask = data.batch['action_mask']
+    else:
+        action_mask = response_mask
+
     # compute kl between ref_policy and current policy
     if 'ref_log_prob' in data.batch.keys():
         kld = core_algos.kl_penalty(data.batch['old_log_probs'], data.batch['ref_log_prob'],
                                     kl_penalty=kl_penalty)  # (batch_size, response_length)
-        kld = kld * response_mask
+        kld = kld * action_mask
         beta = kl_ctrl.value
     else:
         beta = 0
-        kld = torch.zeros_like(response_mask, dtype=torch.float32)
+        kld = torch.zeros_like(action_mask, dtype=torch.float32)
 
     token_level_rewards = token_level_scores - beta * kld
 
-    current_kl = masked_mean(kld, mask=response_mask, axis=-1)  # average over sequence
+    current_kl = masked_mean(kld, mask=action_mask, axis=-1)  # average over sequence
     current_kl = torch.mean(current_kl, dim=0).item()
 
     # according to https://github.com/huggingface/trl/blob/951ca1841f29114b969b57b26c7d3e80a39f75a0/trl/trainer/ppo_trainer.py#L837
@@ -172,67 +178,54 @@ def apply_kl_penalty(data: DataProto, kl_ctrl: core_algos.AdaptiveKLController, 
 def compute_advantage(data: DataProto, adv_estimator, gamma=1.0, lam=1.0, num_repeat=1):
     # prepare response group
     # TODO: add other ways to estimate advantages
+    responses = data.batch['responses']
+    response_length = responses.size(-1)
+    attention_mask = data.batch['attention_mask']
+    response_mask = attention_mask[:, -response_length:]
+    
+    # Check if action_mask exists, otherwise use response_mask
+    if 'action_mask' in data.batch:
+        action_mask = data.batch['action_mask']
+    else:
+        action_mask = response_mask  # Fallback to response_mask if action_mask not available
+        
+    token_level_rewards = data.batch['token_level_rewards']
+    
     if adv_estimator == AdvantageEstimator.GAE:
         values = data.batch['values']
-        responses = data.batch['responses']
-        response_length = responses.size(-1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
-        token_level_rewards = data.batch['token_level_rewards']
         advantages, returns = core_algos.compute_gae_advantage_return(token_level_rewards=token_level_rewards,
                                                                       values=values,
-                                                                      eos_mask=response_mask,
+                                                                      action_mask=action_mask,
                                                                       gamma=gamma,
                                                                       lam=lam)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.GRPO:
-        token_level_rewards = data.batch['token_level_rewards']
         index = data.non_tensor_batch['uid']
-        responses = data.batch['responses']
-        response_length = responses.size(-1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
         advantages, returns = core_algos.compute_grpo_outcome_advantage(token_level_rewards=token_level_rewards,
-                                                                        eos_mask=response_mask,
+                                                                        action_mask=action_mask,
                                                                         index=index)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.REINFORCE_PLUS_PLUS:
-        token_level_rewards = data.batch['token_level_rewards']
-        responses = data.batch['responses']
-        response_length = responses.size(-1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
         advantages, returns = core_algos.compute_reinforce_plus_plus_outcome_advantage(
-            token_level_rewards=token_level_rewards, eos_mask=response_mask, gamma=gamma)
+            token_level_rewards=token_level_rewards, action_mask=action_mask, gamma=gamma)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.REMAX:
-        token_level_rewards = data.batch['token_level_rewards']
         index = data.non_tensor_batch['uid']
-        responses = data.batch['responses']
-        response_length = responses.size(-1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
-
         reward_baselines = data.batch['reward_baselines']
 
         advantages, returns = core_algos.compute_remax_outcome_advantage(token_level_rewards=token_level_rewards,
                                                                          reward_baselines=reward_baselines,
-                                                                         eos_mask=response_mask)
+                                                                         action_mask=action_mask)
 
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
     elif adv_estimator == AdvantageEstimator.RLOO:
-        token_level_rewards = data.batch['token_level_rewards']
         index = data.non_tensor_batch['uid']
-        responses = data.batch['responses']
-        response_length = responses.size(-1)
-        attention_mask = data.batch['attention_mask']
-        response_mask = attention_mask[:, -response_length:]
         advantages, returns = core_algos.compute_rloo_outcome_advantage(token_level_rewards=token_level_rewards,
-                                                                        eos_mask=response_mask,
+                                                                        action_mask=action_mask,
                                                                         index=index)
         data.batch['advantages'] = advantages
         data.batch['returns'] = returns
@@ -424,10 +417,13 @@ class RayAgentTrainer(object):
                                          max_prompt_length=self.config.data.max_prompt_length,
                                          filter_prompts=True,
                                          return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation='error',
+                                         truncation=self.config.data.get('truncation', 'error'),
                                          filter_overlong_prompts=self.config.data.filter_overlong_prompts,
                                          tool_env=self.env,
                                          use_custom_tool_format_func=self.config.data.get('use_custom_tool_format_func', False))
+        assert self.train_dataset.truncation == self.config.data.get(
+            'truncation', 'error'
+        ), f'dataset truncation {self.train_dataset.truncation} must be the same as config {self.config.data.get("truncation", "error")}'
         # use sampler for better ckpt resume
         if self.config.data.shuffle:
             train_dataloader_generator = torch.Generator()
@@ -451,10 +447,13 @@ class RayAgentTrainer(object):
                                        max_prompt_length=self.config.data.max_prompt_length,
                                        filter_prompts=True,
                                        return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                       truncation='error',
+                                       truncation=self.config.data.get('truncation', 'error'),
                                        filter_overlong_prompts=self.config.data.filter_overlong_prompts,
                                        tool_env=self.val_env,
                                        use_custom_tool_format_func=self.config.data.get('use_custom_tool_format_func', False))
+        assert self.val_dataset.truncation == self.config.data.get(
+            'truncation', 'error'
+        ), f'dataset truncation {self.val_dataset.truncation} must be the same as config {self.config.data.get("truncation", "error")}'
         self.val_dataloader = StatefulDataLoader(
             dataset=self.val_dataset,
             # Validation datasets are sent to inference engines as a whole batch,
@@ -733,14 +732,27 @@ class RayAgentTrainer(object):
         # path: given_path + `/global_step_{global_steps}` + `/actor`
         local_global_step_folder = os.path.join(self.config.trainer.default_local_dir,
                                                 f'global_step_{self.global_steps}')
+
+        print(f'local_global_step_folder: {local_global_step_folder}')
         actor_local_path = os.path.join(local_global_step_folder, 'actor')
 
         actor_remote_path = None if self.config.trainer.default_hdfs_dir is None else os.path.join(
             self.config.trainer.default_hdfs_dir, f'global_step_{self.global_steps}', 'actor')
+
+        remove_previous_ckpt_in_save = self.config.trainer.get('remove_previous_ckpt_in_save', False)
+        if remove_previous_ckpt_in_save:
+            print(
+                'Warning: remove_previous_ckpt_in_save is deprecated, set max_actor_ckpt_to_keep=1 and max_critic_ckpt_to_keep=1 instead'
+            )
+        max_actor_ckpt_to_keep = self.config.trainer.get('max_actor_ckpt_to_keep',
+                                                         None) if not remove_previous_ckpt_in_save else 1
+        max_critic_ckpt_to_keep = self.config.trainer.get('max_critic_ckpt_to_keep',
+                                                          None) if not remove_previous_ckpt_in_save else 1
+
         self.actor_rollout_wg.save_checkpoint(actor_local_path,
                                               actor_remote_path,
                                               self.global_steps,
-                                              remove_previous_ckpt=self.config.trainer.remove_previous_ckpt_in_save)
+                                              max_ckpt_to_keep=max_actor_ckpt_to_keep)
 
         if self.use_critic:
             critic_local_path = os.path.join(local_global_step_folder, 'critic')
@@ -749,7 +761,7 @@ class RayAgentTrainer(object):
             self.critic_wg.save_checkpoint(critic_local_path,
                                            critic_remote_path,
                                            self.global_steps,
-                                           remove_previous_ckpt=self.config.trainer.remove_previous_ckpt_in_save)
+                                           max_ckpt_to_keep=max_critic_ckpt_to_keep)
 
         # save dataloader
         dataloader_local_path = os.path.join(local_global_step_folder, 'data.pt')
@@ -810,7 +822,7 @@ class RayAgentTrainer(object):
         # TODO: from remote not implemented yet
         dataloader_local_path = os.path.join(global_step_folder, 'data.pt')
         if os.path.exists(dataloader_local_path):
-            dataloader_state_dict = torch.load(dataloader_local_path)
+            dataloader_state_dict = torch.load(dataloader_local_path, weights_only=False)
             self.train_dataloader.load_state_dict(dataloader_state_dict)
         else:
             print(f"Warning: No dataloader state found at {dataloader_local_path}, will start from scratch")
@@ -931,6 +943,9 @@ class RayAgentTrainer(object):
             logger.log(data=val_metrics, step=self.global_steps)
             if self.config.trainer.get('val_only', False):
                 return
+
+        # add tqdm
+        progress_bar = tqdm(total=self.total_training_steps, initial=self.global_steps, desc="Training Progress")
 
         # we start from step 1
         self.global_steps += 1
@@ -1079,6 +1094,9 @@ class RayAgentTrainer(object):
                         else:
                             batch.batch['token_level_rewards'] = batch.batch['token_level_scores']
 
+                        # Create action mask before computing advantages
+                        batch, metrics = self._create_action_mask(batch, metrics)
+                        
                         # compute advantages, executed on the driver process
                         batch = compute_advantage(batch,
                                                   adv_estimator=self.config.algorithm.adv_estimator,
@@ -1097,7 +1115,6 @@ class RayAgentTrainer(object):
                     if self.config.trainer.critic_warmup <= self.global_steps:
                         # update actor
                         with _timer('update_actor', timing_raw):
-                            batch, metrics = self._create_loss_mask(batch, metrics)
                             actor_output = self.actor_rollout_wg.update_actor(batch)
                         actor_output_metrics = reduce_metrics(actor_output.meta_info['metrics'])
                         metrics.update(actor_output_metrics)
@@ -1128,55 +1145,75 @@ class RayAgentTrainer(object):
 
                 if is_last_step:
                     pprint(f'Final validation metrics: {last_val_metrics}')
+                    progress_bar.close()
                     return
 
+                progress_bar.update(1)
                 self.global_steps += 1
 
-    def _create_loss_mask(self, batch: DataProto, metrics: dict) -> Tuple[DataProto, dict]:
+    def _create_action_mask(self, batch: DataProto, metrics: dict) -> Tuple[DataProto, dict]:
         """
-        Create a loss mask for tool responses.
+        Create an action mask for advantage calculation.
         
-        This function identifies all <tool_response> and </tool_response> tags in the responses
-        and masks them (sets loss_mask to 0) to exclude them from policy gradient updates.
-        The mask is applied to both the tags themselves and all tokens in between.
+        This function identifies which tokens are generated by the model (action_mask=1)
+        and which tokens are from external interactions (action_mask=0) like user messages and tool responses.
+        External interaction tokens should be excluded from policy gradient updates.
+        
+        In multi-turn conversations, the entire user message including tags like <|im_start|>user
+        up to the <|im_start|>assistant and the starting <think> are considered external interactions.
         """
         response_length = batch.batch['responses'].shape[-1]
         response_mask = batch.batch['attention_mask'][:, -response_length:]
         
-        # Initialize loss mask with ones
-        loss_mask = torch.ones_like(response_mask)
+        # Initialize action mask with the response mask
+        action_mask = response_mask.clone()
+        
+        # If tools aren't configured, return the full mask
+        if not hasattr(self.config, 'tool'):
+            batch.batch['action_mask'] = action_mask
+            return batch, metrics
+        
+        # Get token patterns for tool responses
+        # tool_response_start = self.config.tool.tool_response_start
+        # tool_response_end = self.config.tool.tool_response_end
+        tool_response_start = "\n<|im_start|>user\n<tool_response>"
+        tool_response_end = "</tool_response><|im_end|>\n<|im_start|>assistant\n"
+        
+        # Decode each response to find tool response ranges
         responses = [self.tokenizer.decode(resp, skip_special_tokens=False) for resp in batch.batch['responses']]
         
-        # Get token IDs for the tool response tags
-        start_tag = "<|im_start|>user\n<tool_response>"
-        end_tag = "</tool_response><|im_end|>\n<|im_start|>assistant"
-        
         for i, response in enumerate(responses):
-            # Find positions of start and end tags
-            start_positions = [m.start() for m in re.finditer(re.escape(start_tag), response)]
-            end_positions = [m.start() + len(end_tag) for m in re.finditer(re.escape(end_tag), response)]
-
-            
-            # Convert character positions to token positions
-            for start, end in zip(start_positions, end_positions):
-                prefix_to_start = response[:start]
-                state_section = response[start:end]
+            # Find all tool response sections
+            start_pos = 0
+            while True:
+                start_idx = response.find(tool_response_start, start_pos)
+                if start_idx == -1:
+                    break
                 
-                start_tokens = self.tokenizer.encode(prefix_to_start, add_special_tokens=False)
-                state_tokens = self.tokenizer.encode(state_section, add_special_tokens=False)
+                end_idx = response.find(tool_response_end, start_idx)
+                if end_idx == -1:
+                    break
                 
-                start_token_pos = len(start_tokens)
-                end_token_pos = start_token_pos + len(state_tokens)
+                # Convert character positions to token positions
+                start_text = response[:start_idx]
+                tool_section = response[start_idx:end_idx + len(tool_response_end)]
                 
-                loss_mask[i, start_token_pos:end_token_pos] = 0
+                # Get token positions
+                start_token_pos = len(self.tokenizer.encode(start_text, add_special_tokens=False))
+                tool_section_length = len(self.tokenizer.encode(tool_section, add_special_tokens=False))
+                
+                # Mask tool response tokens (set to 0)
+                if start_token_pos < response_length and start_token_pos + tool_section_length <= response_length:
+                    action_mask[i, start_token_pos:start_token_pos + tool_section_length] = 0
+                
+                start_pos = end_idx + len(tool_response_end)
         
-            loss_mask = loss_mask * response_mask
-            batch.batch['loss_mask'] = loss_mask
-            
-            metrics.update({
-                'state_tokens/total': loss_mask.sum().item(),
-                'state_tokens/mean': loss_mask.sum().item() / len(responses),
-                'state_tokens/coverage': (loss_mask.sum() / response_mask.sum()).item(),
-            })
+        # Log what percentage of tokens are actions vs external interactions
+        action_ratio = action_mask.sum().item() / (response_mask.sum().item() + 1e-8)
+        metrics['action/ratio'] = action_ratio
+        metrics['action/length/max'] = action_mask.sum(dim=-1).max().item()
+        metrics['action/length/min'] = action_mask.sum(dim=-1).min().item()
+        metrics['action/length/mean'] = action_mask.sum(dim=-1).float().mean().item()
         
+        batch.batch['action_mask'] = action_mask
         return batch, metrics

@@ -23,7 +23,6 @@ from torch import nn
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 
 from verl import DataProto
-from verl.trainer.ppo import core_algos
 from verl.workers.actor import BasePPOActor
 from verl.utils.py_functional import append_to_dict
 from verl.utils.torch_functional import logprobs_from_logits, masked_mean
@@ -32,6 +31,8 @@ from verl.utils.seqlen_balancing import rearrange_micro_batches, get_reverse_idx
 import verl.utils.torch_functional as verl_F
 
 from flash_attn.bert_padding import pad_input, unpad_input, rearrange, index_first_axis
+
+from agent_r1.src import core_algos
 
 __all__ = ['DataParallelPPOActor']
 
@@ -232,7 +233,7 @@ class DataParallelPPOActor(BasePPOActor):
 
         temperature = data.meta_info['temperature']  # temperature must be in the data.meta_info to avoid slient error
 
-        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages', 'loss_mask']
+        select_keys = ['responses', 'input_ids', 'attention_mask', 'position_ids', 'old_log_probs', 'advantages', 'action_mask']
         if self.config.use_kl_loss:
             select_keys.append('ref_log_prob')
         batch = data.select(batch_keys=select_keys).batch
@@ -275,7 +276,7 @@ class DataParallelPPOActor(BasePPOActor):
                     # responses = data['responses']
                     # response_length = responses.size(1)
                     # attention_mask = data['attention_mask']
-                    response_mask = data['loss_mask']
+                    action_mask = data['action_mask']
                     old_log_prob = data['old_log_probs']
                     advantages = data['advantages']
 
@@ -288,10 +289,10 @@ class DataParallelPPOActor(BasePPOActor):
                     pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
                                                                                   log_prob=log_prob,
                                                                                   advantages=advantages,
-                                                                                  eos_mask=response_mask,
+                                                                                  action_mask=action_mask,
                                                                                   cliprange=clip_ratio)
                     # compute entropy loss from entropy
-                    entropy_loss = verl_F.masked_mean(entropy, response_mask)
+                    entropy_loss = verl_F.masked_mean(entropy, action_mask)
 
                     # compute policy loss
                     policy_loss = pg_loss - entropy_loss * entropy_coeff
@@ -302,7 +303,7 @@ class DataParallelPPOActor(BasePPOActor):
                         kld = core_algos.kl_penalty(logprob=log_prob,
                                                     ref_logprob=ref_log_prob,
                                                     kl_penalty=self.config.kl_loss_type)
-                        kl_loss = masked_mean(kld, response_mask)
+                        kl_loss = masked_mean(kld, action_mask)
 
                         policy_loss = policy_loss + kl_loss * self.config.kl_loss_coef
                         metrics['actor/kl_loss'] = kl_loss.detach().item()

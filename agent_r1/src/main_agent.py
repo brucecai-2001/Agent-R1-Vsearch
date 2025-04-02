@@ -19,6 +19,7 @@ from .agent_ray_trainer import RayAgentTrainer
 from agent_r1.tool import ToolEnv
 from agent_r1.tool.tools import _default_tools
 
+import os
 import ray
 import hydra
 
@@ -102,7 +103,9 @@ def main(config):
 
 
 def run_agent(config) -> None:
-
+    # TODO(linjunrong.ocss884): this ENV is left for resolving SGLang conflict with ray devices
+    # isolation, will solve in the future
+    os.environ["ENSURE_CUDA_VISIBLE_DEVICES"] = os.environ.get('CUDA_VISIBLE_DEVICES', '')
     if not ray.is_initialized():
         # this is for local ray cluster
         ray.init(runtime_env={
@@ -113,92 +116,95 @@ def run_agent(config) -> None:
             }
         })
 
-    ray.get(main_task.remote(config))
+    runner = TaskRunner.remote()
+    ray.get(runner.run.remote(config))
 
 
 @ray.remote(num_cpus=1)  # please make sure main_task is not scheduled on head
-def main_task(config):
-    from verl.utils.fs import copy_to_local
-    # print initial config
-    from pprint import pprint
-    from omegaconf import OmegaConf
-    pprint(OmegaConf.to_container(config, resolve=True))  # resolve=True will eval symbol values
-    OmegaConf.resolve(config)
+class TaskRunner:
 
-    # download the checkpoint from hdfs
-    local_path = copy_to_local(config.actor_rollout_ref.model.path)
+    def run(self, config):
+        from verl.utils.fs import copy_to_local
+        # print initial config
+        from pprint import pprint
+        from omegaconf import OmegaConf
+        pprint(OmegaConf.to_container(config, resolve=True))  # resolve=True will eval symbol values
+        OmegaConf.resolve(config)
 
-    # instantiate tokenizer
-    from verl.utils import hf_tokenizer, hf_processor
-    tokenizer = hf_tokenizer(local_path)
-    processor = hf_processor(local_path, use_fast=True)  # used for multimodal LLM, could be none
+        # download the checkpoint from hdfs
+        local_path = copy_to_local(config.actor_rollout_ref.model.path)
 
-    # define worker classes
-    if config.actor_rollout_ref.actor.strategy == 'fsdp':
-        assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
-        from .fsdp_workers import ActorRolloutRefWorker, CriticWorker
-        from verl.single_controller.ray import RayWorkerGroup
-        ray_worker_group_cls = RayWorkerGroup
+        # instantiate tokenizer
+        from verl.utils import hf_tokenizer, hf_processor
+        tokenizer = hf_tokenizer(local_path)
+        processor = hf_processor(local_path, use_fast=True)  # used for multimodal LLM, could be none
 
-    elif config.actor_rollout_ref.actor.strategy == 'megatron':
-        assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
-        from verl.workers.megatron_workers import ActorRolloutRefWorker, CriticWorker
-        from verl.single_controller.ray.megatron import NVMegatronRayWorkerGroup
-        ray_worker_group_cls = NVMegatronRayWorkerGroup
+        # define worker classes
+        if config.actor_rollout_ref.actor.strategy == 'fsdp':
+            assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
+            from .fsdp_workers import ActorRolloutRefWorker, CriticWorker
+            from verl.single_controller.ray import RayWorkerGroup
+            ray_worker_group_cls = RayWorkerGroup
 
-    else:
-        raise NotImplementedError
+        elif config.actor_rollout_ref.actor.strategy == 'megatron':
+            assert config.actor_rollout_ref.actor.strategy == config.critic.strategy
+            from verl.workers.megatron_workers import ActorRolloutRefWorker, CriticWorker
+            from verl.single_controller.ray.megatron import NVMegatronRayWorkerGroup
+            ray_worker_group_cls = NVMegatronRayWorkerGroup
 
-    from .agent_ray_trainer import ResourcePoolManager, Role
-
-    role_worker_mapping = {
-        Role.ActorRollout: ray.remote(ActorRolloutRefWorker),
-        Role.Critic: ray.remote(CriticWorker),
-        Role.RefPolicy: ray.remote(ActorRolloutRefWorker)
-    }
-
-    global_pool_id = 'global_pool'
-    resource_pool_spec = {
-        global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
-    }
-    mapping = {
-        Role.ActorRollout: global_pool_id,
-        Role.Critic: global_pool_id,
-        Role.RefPolicy: global_pool_id,
-    }
-
-    # we should adopt a multi-source reward function here
-    # - for rule-based rm, we directly call a reward score
-    # - for model-based rm, we call a model
-    # - for code related prompt, we send to a sandbox if there are test cases
-    # - finally, we combine all the rewards together
-    # - The reward type depends on the tag of the data
-    if config.reward_model.enable:
-        if config.reward_model.strategy == 'fsdp':
-            from verl.workers.fsdp_workers import RewardModelWorker
-        elif config.reward_model.strategy == 'megatron':
-            from verl.workers.megatron_workers import RewardModelWorker
         else:
             raise NotImplementedError
-        role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
-        mapping[Role.RewardModel] = global_pool_id
 
-    resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
+        from .agent_ray_trainer import ResourcePoolManager, Role
 
-    tools = _default_tools(config.tool.env)
-    env = ToolEnv(tools=tools, max_turns=config.tool.max_turns)
+        role_worker_mapping = {
+            Role.ActorRollout: ray.remote(ActorRolloutRefWorker),
+            Role.Critic: ray.remote(CriticWorker),
+            Role.RefPolicy: ray.remote(ActorRolloutRefWorker)
+        }
 
-    trainer = RayAgentTrainer(config=config,
-                            tokenizer=tokenizer,
-                            processor=processor,
-                            role_worker_mapping=role_worker_mapping,
-                            resource_pool_manager=resource_pool_manager,
-                            ray_worker_group_cls=ray_worker_group_cls,
-                            reward_fn=RewardManager(tokenizer=tokenizer, num_examine=0),
-                            val_reward_fn=RewardManager(tokenizer=tokenizer, num_examine=1),
+        global_pool_id = 'global_pool'
+        resource_pool_spec = {
+            global_pool_id: [config.trainer.n_gpus_per_node] * config.trainer.nnodes,
+        }
+        mapping = {
+            Role.ActorRollout: global_pool_id,
+            Role.Critic: global_pool_id,
+            Role.RefPolicy: global_pool_id,
+        }
+
+        # we should adopt a multi-source reward function here
+        # - for rule-based rm, we directly call a reward score
+        # - for model-based rm, we call a model
+        # - for code related prompt, we send to a sandbox if there are test cases
+        # - finally, we combine all the rewards together
+        # - The reward type depends on the tag of the data
+        if config.reward_model.enable:
+            if config.reward_model.strategy == 'fsdp':
+                from verl.workers.fsdp_workers import RewardModelWorker
+            elif config.reward_model.strategy == 'megatron':
+                from verl.workers.megatron_workers import RewardModelWorker
+            else:
+                raise NotImplementedError
+            role_worker_mapping[Role.RewardModel] = ray.remote(RewardModelWorker)
+            mapping[Role.RewardModel] = global_pool_id
+
+        resource_pool_manager = ResourcePoolManager(resource_pool_spec=resource_pool_spec, mapping=mapping)
+
+        tools = _default_tools(config.tool.env)
+        env = ToolEnv(tools=tools, max_turns=config.tool.max_turns)
+
+        trainer = RayAgentTrainer(config=config,
+                                tokenizer=tokenizer,
+                                processor=processor,
+                                role_worker_mapping=role_worker_mapping,
+                                resource_pool_manager=resource_pool_manager,
+                                ray_worker_group_cls=ray_worker_group_cls,
+                                reward_fn=RewardManager(tokenizer=tokenizer, num_examine=0),
+                                val_reward_fn=RewardManager(tokenizer=tokenizer, num_examine=1),
                             env=env)
-    trainer.init_workers()
-    trainer.fit()
+        trainer.init_workers()
+        trainer.fit()
 
 
 if __name__ == '__main__':

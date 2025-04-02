@@ -1,4 +1,4 @@
-python3 -m agent_r1.vllm_infer.run \
+python3 -m agent_r1.vllm_infer.chat \
     --env wikisearch \
     --api-key EMPTY \
     --api-base http://localhost:8001/v1 \

@@ -51,11 +51,7 @@ class Tool(ABC):
         Returns:
             Dictionary containing name, description, and parameters
         """
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters
-        }
+        return {"type": "function", "function": {"name": self.name, "description": self.description, "parameters": self.parameters}}
     
     def get_simple_description(self) -> str:
         """

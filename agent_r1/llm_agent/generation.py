@@ -9,13 +9,14 @@ import os
 from collections import defaultdict
 from typing import List, Dict, Any, Tuple, Optional
 from dataclasses import dataclass
+import numpy as np
 
 import random
 
 from .tensor_helper import TensorHelper, TensorConfig
 from agent_r1.tool.tool_env import ToolEnv, step, step_batch
 from verl import DataProto
-from verl.utils.tracking import Tracking
+from verl.protocol import pad_dataproto_to_divisor, unpad_dataproto
 
 @dataclass
 class ToolGenerationConfig:
@@ -106,10 +107,7 @@ class ToolGenerationManager:
         # Extract the first tool call from each response
         responses_str, active_masks = self._process_tool_call(responses_str)
         
-        # Tokenize processed responses
-        cleaned_token_ids = self._batch_tokenize(responses_str)
-        
-        return cleaned_token_ids, responses_str, torch.tensor(active_masks, dtype=torch.bool)
+        return responses_str, torch.tensor(active_masks, dtype=torch.bool)
     
     def _process_tool_responses(self, tool_responses: List[str]) -> torch.Tensor:
         """Process tool responses to token ids"""
@@ -182,14 +180,17 @@ class ToolGenerationManager:
                 tool_responses[idx] = self.config.tool_custom_response_template.format(tool_response=tool_response)
         return tool_responses
     
-    def _update_rolling_state(self, rollings, cur_responses: torch.Tensor, 
-                            tool_responses_ids: torch.Tensor) -> Dict:
+    def _update_rolling_state(self, rollings, cur_responses: List[str], 
+                            tool_responses: List[str]) -> Dict:
         """Update rolling state with new responses and observations."""
+
+        responses = [cur_response + tool_response for cur_response, tool_response in zip(cur_responses, tool_responses)]
+        responses_ids = self._batch_tokenize(responses)
+
         # Concatenate and handle padding
         new_input_ids = self.tensor_fn.concatenate_with_padding([
             rollings.batch['input_ids'],
-            cur_responses,
-            tool_responses_ids
+            responses_ids
         ])
         
         # Create attention mask and position ids
@@ -199,75 +200,40 @@ class ToolGenerationManager:
         # Cut to appropriate length
         effective_len = new_attention_mask.sum(dim=1).max()
         max_len = min(self.config.max_prompt_length, effective_len)
+
+        raw_prompt_ids = rollings.non_tensor_batch['raw_prompt_ids'].tolist()
+        new_raw_prompt_ids = []
+        for raw_prompt_id, response in zip(raw_prompt_ids, responses):
+            if len(response) > 0:
+                new_raw_prompt_ids.append(raw_prompt_id + self.tokenizer.encode(response, add_special_tokens=False))
+            else:
+                new_raw_prompt_ids.append(raw_prompt_id)
         
-        return DataProto.from_dict({
+        new_raw_prompt_ids = np.array(new_raw_prompt_ids, dtype=object)
+        
+        return DataProto.from_single_dict({
             'input_ids': new_input_ids[:, -max_len:],
             'position_ids': new_position_ids[:, -max_len:],
-            'attention_mask': new_attention_mask[:, -max_len:]
+            'attention_mask': new_attention_mask[:, -max_len:],
+            'raw_prompt_ids': new_raw_prompt_ids
         })
 
     def _update_right_side(self, right_side: Dict, 
-                          cur_responses: torch.Tensor,
-                          tool_responses_ids: torch.Tensor) -> Dict:
+                          cur_responses: List[str],
+                          tool_responses: List[str]) -> Dict:
         """Update right side state."""
+        responses = [cur_response + tool_response for cur_response, tool_response in zip(cur_responses, tool_responses)]
+        responses_ids = self._batch_tokenize(responses)
+
         responses = self.tensor_fn.concatenate_with_padding([
             right_side['responses'],
-            cur_responses,
-            tool_responses_ids
+            responses_ids
         ], pad_to_left=False)
         
         effective_len = self.tensor_fn.create_attention_mask(responses).sum(dim=1).max()
         max_len = min(self.config.max_prompt_length, effective_len)
         
         return {'responses': responses[:, :max_len]}
-
-
-    def _generate_with_gpu_padding(self, active_batch: DataProto) -> DataProto:
-        """
-            Wrapper for generation that handles multi-GPU padding requirements.
-            if num_gpus <= 1, return self.actor_rollout_wg.generate_sequences(active_batch)
-            if active_batch size is not divisible by num_gpus, pad with first sequence
-            then remove padding from output
-        """
-        num_gpus = self.config.num_gpus
-        if num_gpus <= 1:
-            return self.actor_rollout_wg.generate_sequences(active_batch)
-            
-        batch_size = active_batch.batch['input_ids'].shape[0]
-        remainder = batch_size % num_gpus
-        
-        if remainder == 0:
-            return self.actor_rollout_wg.generate_sequences(active_batch)
-            
-        # Add padding sequences
-        padding_size = num_gpus - remainder
-        padded_batch = {}
-        
-        for k, v in active_batch.batch.items():
-            # Use first sequence as padding template
-            pad_sequence = v[0:1].repeat(padding_size, *[1] * (len(v.shape) - 1))
-            padded_batch[k] = torch.cat([v, pad_sequence], dim=0)
-            
-        padded_active_batch = DataProto.from_dict(padded_batch)
-        
-        # Generate with padded batch
-        padded_output = self.actor_rollout_wg.generate_sequences(padded_active_batch)
-        
-        # Remove padding from output
-        trimmed_batch = {k: v[:-padding_size] for k, v in padded_output.batch.items()}
-        
-        # Handle meta_info if present
-        if hasattr(padded_output, 'meta_info') and padded_output.meta_info:
-            trimmed_meta = {}
-            for k, v in padded_output.meta_info.items():
-                if isinstance(v, torch.Tensor):
-                    trimmed_meta[k] = v[:-padding_size]
-                else:
-                    trimmed_meta[k] = v
-            padded_output.meta_info = trimmed_meta
-            
-        padded_output.batch = trimmed_batch
-        return padded_output
     
     def run_llm_loop(self, gen_batch, envs: List[Any] = None,
                     initial_input_ids: torch.Tensor = None) -> Tuple[Dict, Dict]:
@@ -291,16 +257,27 @@ class ToolGenerationManager:
                 rollings.batch,
                 keys=['input_ids', 'attention_mask', 'position_ids']
             )
-            
-            # gen_output = self.actor_rollout_wg.generate_sequences(rollings)
-            rollings_active = DataProto.from_dict({
-                k: v[active_mask] for k, v in rollings.batch.items()
-            })
-            gen_output = self._generate_with_gpu_padding(rollings_active)
 
-            meta_info = gen_output.meta_info            
-            responses_ids, responses_str, new_active_masks = self._postprocess_responses(gen_output.batch['responses'])
-            responses_ids, responses_str = self.tensor_fn._example_level_pad(responses_ids, responses_str, active_mask)
+            active_batch = {k: v[active_mask] for k, v in rollings.batch.items()}
+            active_non_tensor_batch = {}
+
+            for k, v in rollings.non_tensor_batch.items():
+                try:
+                    # Try direct boolean indexing first
+                    active_non_tensor_batch[k] = v[active_mask.numpy()]
+                except (TypeError, ValueError, IndexError):
+                    # Fall back to explicit indexing if direct indexing fails
+                    active_indices = torch.where(active_mask)[0].tolist()
+                    active_non_tensor_batch[k] = np.array([v[i] for i in active_indices], dtype=object)
+            
+            rollings_active = DataProto.from_dict(tensors=active_batch, non_tensors=active_non_tensor_batch)
+            rollings_active, pad_size = pad_dataproto_to_divisor(rollings_active, self.actor_rollout_wg.world_size)
+            gen_output = self.actor_rollout_wg.generate_sequences(rollings_active)
+            gen_output = unpad_dataproto(gen_output, pad_size=pad_size)
+
+            meta_info = gen_output.meta_info
+            responses_str, new_active_masks = self._postprocess_responses(gen_output.batch['responses'])
+            responses_str = self.tensor_fn._example_level_pad(responses_str, active_mask)
 
             active_mask[active_mask.clone()] = new_active_masks
 
@@ -314,18 +291,17 @@ class ToolGenerationManager:
                 tool_responses = self._execute_tool_calls(responses_str, envs, active_mask)
 
             active_num_list.append(active_mask.sum().item())
-            tool_responses_ids = self._process_tool_responses(tool_responses)
             
             # Update states
             rollings = self._update_rolling_state(
                 rollings,
-                responses_ids,
-                tool_responses_ids
+                responses_str,
+                tool_responses
             )
             original_right_side = self._update_right_side(
                 original_right_side,
-                responses_ids,
-                tool_responses_ids
+                responses_str,
+                tool_responses
             )
         
         print("ACTIVE_TRAJ_NUM:", active_num_list)
