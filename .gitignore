@@ -7,3 +7,4 @@ checkpoints/
 .history/
 envs/
 results/
+sft/

@@ -172,7 +172,7 @@ def run_inference(
         [
             {
                 "role": "system",
-                "content": """You are a helpful assistant.
+                "content": """You are Qwen, created by Alibaba Cloud. You are a helpful assistant.
 
 # Tools
 
