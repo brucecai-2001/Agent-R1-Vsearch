@@ -283,11 +283,7 @@ def compute_score_answer(solution_str: str,
     reward = 1.0 if correct else 0.0
     acc = correct
 
-    return {
-        "score": reward,
-        "acc": acc,
-        "pred": pred,
-    }
+    return reward
 
 def compute_score_format(solution_str):
     """The scoring function for format reward.
@@ -354,7 +350,7 @@ def compute_score_format_answer(solution_str, ground_truth):
 
     try:
         format_reward = compute_score_format(solution_str)
-        answer_reward = compute_score_answer(solution_str, ground_truth)["score"]
+        answer_reward = compute_score_answer(solution_str, ground_truth)
 
         format_reward = min(format_reward, 1.0)
         if format_reward == 1.0:
