@@ -11,8 +11,8 @@ python3 -m agent_r1.src.main_agent \
     data.train_batch_size=128 \
     data.max_prompt_length=4096 \
     data.max_response_length=4096 \
-    data.max_start_length=4096 \
-    data.max_tool_response_length=4096 \
+    data.max_response_length_single_turn=2048 \
+    data.max_tool_response_length=2048 \
     actor_rollout_ref.model.path=$BASE_MODEL \
     actor_rollout_ref.actor.optim.lr=1e-6 \
     actor_rollout_ref.model.use_remove_padding=True \

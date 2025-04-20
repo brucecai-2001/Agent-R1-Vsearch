@@ -3,7 +3,7 @@ Base tool class definition, providing fundamental tool interfaces
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, Any, Tuple, Optional, List
+from typing import Dict, List, Any, Tuple
 
 class Tool(ABC):
     """
@@ -72,26 +72,28 @@ class Tool(ABC):
                     param_desc = param_info.get("description", "")
                     param_type = param_info.get("type", "")
                     is_required = "(Required)" if param_name in required else "(Optional)"
-                    desc += f"\n  - {param_name} {is_required}: {param_desc}"
+                    desc += f"\n  - {param_name}({param_type},{is_required}): {param_desc}"
                     if "enum" in param_info:
                         desc += f", possible values: {', '.join(map(str, param_info['enum']))}"
         
         return desc
     
     @abstractmethod
-    def execute(self, args: Dict) -> str:
+    def execute(self, args: Dict) -> Dict[str, Any]:
         """
         Execute the tool functionality
         
         Args:
             args: Tool parameters
-            
+
         Returns:
-            Tool execution result
+            Dictionary containing:
+            - content: str - Text content of the result
+            - image: Optional[bytes] - Image data if applicable
         """
         pass
 
-    def batch_execute(self, args_list: List[Dict]) -> List[str]:
+    def batch_execute(self, args_list: List[Dict]) -> List[Dict[str, Any]]:
         """
         Execute multiple tool calls in batch
         
@@ -100,51 +102,46 @@ class Tool(ABC):
         
         Args:
             args_list: List of tool parameters
-            
+
         Returns:
-            List of tool execution results
+            List of result dictionaries, each containing:
+            - content: str - Text content of the result
+            - image: Optional[bytes] - Image data if applicable
         """
         return [self.execute(args) for args in args_list]
     
-    
     def validate_args(self, args: Dict) -> Tuple[bool, str]:
         """
-        Validate if the tool parameters are valid
+        Validate tool arguments against schema
         
         Args:
-            args: Tool parameters
+            args: Tool parameters to validate
             
         Returns:
-            (is_valid, error_message)
+            (is_valid, error_message) tuple
         """
-        # Check if args is a Dict
-        if not isinstance(args, dict):
-            return False, "Arguments must be a dictionary"
-
         # Check required parameters
-        required_params = self.parameters.get("required", [])
-        for param in required_params:
-            if param not in args:
-                return False, f"Missing required parameter: {param}"
+        if "required" in self.parameters:
+            for param in self.parameters["required"]:
+                if param not in args:
+                    return False, f"Missing required parameter: {param}"
         
         # Check parameter types
-        properties = self.parameters.get("properties", {})
-        for param_name, param_value in args.items():
-            if param_name in properties:
-                param_schema = properties[param_name]
-                
-                # Check type
-                param_type = param_schema.get("type")
-                if param_type and not self._check_type(param_value, param_type):
-                    return False, f"Parameter {param_name} has incorrect type, should be {param_type}"
-                
-                # Check enum values
-                if "enum" in param_schema and param_value not in param_schema["enum"]:
-                    valid_values = ", ".join(map(str, param_schema["enum"]))
-                    return False, f"Parameter {param_name} has invalid value, should be one of: {valid_values}"
+        if "properties" in self.parameters:
+            for param_name, param_info in self.parameters["properties"].items():
+                if param_name in args:
+                    value = args[param_name]
+                    expected_type = param_info.get("type")
+                    
+                    if expected_type and not self._check_type(value, expected_type):
+                        return False, f"Invalid type for parameter {param_name}: expected {expected_type}"
+                    
+                    # Check enum values if specified
+                    if "enum" in param_info and value not in param_info["enum"]:
+                        return False, f"Invalid value for parameter {param_name}: must be one of {param_info['enum']}"
         
-        return True, "Parameters valid"
-    
+        return True, ""
+
     def _check_type(self, value: Any, expected_type: str) -> bool:
         """
         Check if the value's type matches the expected type
@@ -170,13 +167,15 @@ class Tool(ABC):
             return isinstance(value, dict)
         return True  # If unknown type, default to pass
     
-    def calculate_reward(self, args: Dict, result: str) -> float:
+    def calculate_reward(self, args: Dict, result: Dict[str, Any]) -> float:
         """
         Calculate the reward for tool execution
         
         Args:
             args: Tool parameters
-            result: Tool execution result
+            result: Tool execution result dictionary containing:
+                - content: str - Text content of the result
+                - image: Optional[bytes] - Image data if applicable
             
         Returns:
             Reward value

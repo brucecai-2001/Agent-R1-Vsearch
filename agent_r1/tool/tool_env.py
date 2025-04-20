@@ -4,11 +4,8 @@ Generic tool environment implementation, usable with any set of tools
 
 import re
 import json
-import random
 import traceback
-from typing import Dict, List, Any, Tuple, Optional
-from abc import ABC, abstractmethod
-from collections import defaultdict
+from typing import Dict, List, Any
 from copy import deepcopy
 
 from agent_r1.tool.tool_base import Tool
@@ -29,7 +26,7 @@ def step(env: 'ToolEnv', action_text: str):
     action = env.extract_tool_call(action_text)
     
     if action == env.INVALID_ACTION:
-        result = "Invalid tool call format. Please use <tool_call>{\"name\": \"tool_name\", \"arguments\": {params_json}}</tool_call> format."
+        result = {"content": "Invalid tool call format. Please use <tool_call>{\"name\": \"tool_name\", \"arguments\": {params_json}}</tool_call> format.", "image": None}
         reward = env.PENALTY_FOR_INVALID  # Syntax error penalty
         env._update_tracking_variables(
             response=action_text,
@@ -45,7 +42,7 @@ def step(env: 'ToolEnv', action_text: str):
     
     # Validate if the tool exists
     if tool_name not in env.tool_map:
-        result = f"Unknown tool: {tool_name}"
+        result = {"content": f"Unknown tool: {tool_name}", "image": None}
         reward = env.PENALTY_FOR_INEFFECTIVE  # Semantic error penalty
         env._update_tracking_variables(
             response=action_text,
@@ -62,7 +59,7 @@ def step(env: 'ToolEnv', action_text: str):
     # Validate tool arguments
     is_valid, error_msg = tool.validate_args(tool_args)
     if not is_valid:
-        result = f"Invalid arguments for tool '{tool_name}': {error_msg}"
+        result = {"content": f"Invalid arguments for tool '{tool_name}': {error_msg}", "image": None}
         reward = env.PENALTY_FOR_INEFFECTIVE  # Semantic error penalty
         env._update_tracking_variables(
             response=action_text,
@@ -96,10 +93,13 @@ def step(env: 'ToolEnv', action_text: str):
             reward=reward
         )
         
+        # Return the full result dictionary as observation
+        if not isinstance(result, dict):
+            result = {"content": str(result), "image": None}
         return result, reward, done, {"action_is_valid": True, "action_is_effective": True}
     except Exception as e:
         error_trace = traceback.format_exc()
-        result = f"Error executing tool '{tool_name}': {str(e)}"
+        result = {"content": f"Error executing tool '{tool_name}': {str(e)}", "image": None}
         reward = env.PENALTY_FOR_INEFFECTIVE  # Runtime error penalty
         
         env._update_tracking_variables(
@@ -141,7 +141,7 @@ def step_batch(envs: List['ToolEnv'], action_texts: List[str]):
         
         # Handle invalid actions
         if action == env.INVALID_ACTION:
-            result = "Invalid tool call format. Please use <tool_call>{\"name\": \"tool_name\", \"arguments\": {params_json}}</tool_call> format."
+            result = {"content": "Invalid tool call format. Please use <tool_call>{\"name\": \"tool_name\", \"arguments\": {params_json}}</tool_call> format.", "image": None}
             env.steps_taken += 1
             env._update_tracking_variables(
                 response=action_text,
@@ -158,7 +158,7 @@ def step_batch(envs: List['ToolEnv'], action_texts: List[str]):
         
         # Handle unknown tools
         if tool_name not in env.tool_map:
-            result = f"Unknown tool: {tool_name}"
+            result = {"content": f"Unknown tool: {tool_name}", "image": None}
             env.steps_taken += 1
             env._update_tracking_variables(
                 response=action_text,
@@ -168,7 +168,7 @@ def step_batch(envs: List['ToolEnv'], action_texts: List[str]):
                 reward=env.PENALTY_FOR_INEFFECTIVE  # Semantic error penalty
             )
             results[i] = (result, env.PENALTY_FOR_INEFFECTIVE, False, {"action_is_valid": True, "action_is_effective": False})
-            print(f"[WARNING] Unknown tool: {result}")
+            print(f"[WARNING] Unknown tool: {tool_name}")
             continue
             
         # Get tool instance
@@ -177,7 +177,7 @@ def step_batch(envs: List['ToolEnv'], action_texts: List[str]):
         # Validate tool arguments
         is_valid, error_msg = tool.validate_args(tool_args)
         if not is_valid:
-            result = f"Invalid arguments for tool '{tool_name}': {error_msg}"
+            result = {"content": f"Invalid arguments for tool '{tool_name}': {error_msg}", "image": None}
             env.steps_taken += 1
             env._update_tracking_variables(
                 response=action_text,
@@ -187,7 +187,7 @@ def step_batch(envs: List['ToolEnv'], action_texts: List[str]):
                 reward=env.PENALTY_FOR_INEFFECTIVE  # Semantic error penalty
             )
             results[i] = (result, env.PENALTY_FOR_INEFFECTIVE, False, {"action_is_valid": True, "action_is_effective": False})
-            print(f"[WARNING] Invalid arguments for tool: {result}")
+            print(f"[WARNING] Invalid arguments for tool: {error_msg}")
             continue
             
         # Group by tool name
@@ -239,6 +239,9 @@ def step_batch(envs: List['ToolEnv'], action_texts: List[str]):
                 reward=reward
             )
             
+            # Return the full result dictionary as observation
+            if not isinstance(result, dict):
+                result = {"content": str(result), "image": None}
             results[idx] = (result, reward, done, {"action_is_valid": True, "action_is_effective": True})
     return results
 
@@ -405,7 +408,12 @@ For each function call, return a json object with function name and arguments wi
         for i, call in enumerate(self.tool_history):
             context += f"{i+1}. Tool: {call['tool']}\n"
             context += f"   Arguments: {json.dumps(call['args'], ensure_ascii=False)}\n"
-            context += f"   Result: {call['result']}\n\n"
+            result = call['result']
+            if isinstance(result, dict):
+                context += f"   Result: {result.get('content', '')}\n"
+            else:
+                context += f"   Result: {result}\n"
+            context += "\n"
         
         return context
     

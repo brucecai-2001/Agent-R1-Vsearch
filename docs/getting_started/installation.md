@@ -13,6 +13,7 @@ conda activate verl
 # install verl together with some lightweight dependencies in setup.py
 pip3 install torch==2.4.0 --index-url https://download.pytorch.org/whl/cu124
 pip3 install flash-attn --no-build-isolation
+git submodule update --init --recursive
 cd verl
 pip3 install -e .
 ```

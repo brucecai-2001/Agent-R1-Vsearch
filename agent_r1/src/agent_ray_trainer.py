@@ -25,7 +25,6 @@ from pprint import pprint
 from typing import Type, Dict, Tuple
 from copy import deepcopy
 from tqdm import tqdm
-import re
 
 import ray
 import numpy as np
@@ -251,10 +250,10 @@ class RayAgentTrainer(object):
     def __init__(self,
                  config,
                  tokenizer,
+                 processor,
                  role_worker_mapping: dict[Role, WorkerType],
                  resource_pool_manager: ResourcePoolManager,
                  ray_worker_group_cls: RayWorkerGroup = RayWorkerGroup,
-                 processor=None,
                  reward_fn=None,
                  val_reward_fn=None,
                  env: ToolEnv = None,
@@ -523,9 +522,9 @@ class RayAgentTrainer(object):
         # Agent config preparation
         gen_config = ToolGenerationConfig(
             max_turns=self.config.tool.max_turns,
-            max_start_length=self.config.data.max_start_length,
             max_prompt_length=self.config.data.max_prompt_length,
             max_response_length=self.config.data.max_response_length,
+            max_response_length_single_turn=self.config.data.max_response_length_single_turn,
             max_tool_response_length=self.config.data.max_tool_response_length,
             num_gpus=self.config.trainer.n_gpus_per_node,
             use_batch_tool_calls=self.config.tool.use_batch_tool_calls,
@@ -538,6 +537,7 @@ class RayAgentTrainer(object):
 
         generation_manager = ToolGenerationManager(
             tokenizer=self.tokenizer,
+            processor=self.processor,
             actor_rollout_wg=self.actor_rollout_wg,
             config=gen_config,
             is_validation = True,
@@ -583,12 +583,9 @@ class RayAgentTrainer(object):
 
             # pad to be divisible by dp_size
             test_gen_batch_padded, pad_size = pad_dataproto_to_divisor(test_gen_batch, self.actor_rollout_wg.world_size)
-
-            first_input_ids = test_gen_batch_padded.batch['input_ids'][:, -gen_config.max_start_length:].clone()
             test_output_gen_batch_padded = generation_manager.run_llm_loop(
                 test_gen_batch_padded,
                 envs=envs,
-                initial_input_ids=first_input_ids,
             )
 
             # unpad
@@ -954,9 +951,9 @@ class RayAgentTrainer(object):
         # Agent config preparation
         gen_config = ToolGenerationConfig(
             max_turns=self.config.tool.max_turns,
-            max_start_length=self.config.data.max_start_length,
             max_prompt_length=self.config.data.max_prompt_length,
             max_response_length=self.config.data.max_response_length,
+            max_response_length_single_turn=self.config.data.max_response_length_single_turn,
             max_tool_response_length=self.config.data.max_tool_response_length,
             num_gpus=self.config.trainer.n_gpus_per_node,
             use_batch_tool_calls=self.config.tool.use_batch_tool_calls,
@@ -969,6 +966,7 @@ class RayAgentTrainer(object):
 
         generation_manager = ToolGenerationManager(
             tokenizer=self.tokenizer,
+            processor=self.processor,
             actor_rollout_wg=self.actor_rollout_wg,
             config=gen_config,
         )
@@ -1000,14 +998,10 @@ class RayAgentTrainer(object):
                 is_last_step = self.global_steps >= self.total_training_steps
 
                 with _timer('step', timing_raw):
-                    first_input_ids = gen_batch.batch['input_ids'][:, -gen_config.max_start_length:].clone().long()
-
-                    # generate a batch
                     with _timer('gen', timing_raw):
                         final_gen_batch_output = generation_manager.run_llm_loop(
                             gen_batch=gen_batch,
-                            envs=envs,  # Already expanded to match environment count
-                            initial_input_ids=first_input_ids,
+                            envs=envs,
                         )
 
                     for key in final_gen_batch_output.batch.keys():

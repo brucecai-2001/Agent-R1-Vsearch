@@ -308,16 +308,18 @@ class ActorRolloutRefWorker(Worker):
             # TODO: a sharding manager that do nothing?
 
         elif rollout_name == 'vllm':
-            from verl.workers.rollout.vllm_rollout import vLLMRollout, vllm_mode
+            from verl.workers.rollout.vllm_rollout import vllm_mode
             from verl.workers.sharding_manager import FSDPVLLMShardingManager
             log_gpu_memory_usage(f'Before building {rollout_name} rollout', logger=None)
             local_path = copy_to_local(self.config.model.path)
             if vllm_mode == 'customized':
+                from verl.workers.rollout.vllm_rollout.vllm_rollout import vLLMRollout
                 rollout = vLLMRollout(actor_module=self.actor_module_fsdp,
                                       config=self.config.rollout,
                                       tokenizer=self.tokenizer,
                                       model_hf_config=self.actor_model_config)
             elif vllm_mode == 'spmd':
+                from .vllm_rollout_spmd import vLLMRollout
                 rollout = vLLMRollout(model_path=local_path,
                                       config=self.config.rollout,
                                       tokenizer=self.tokenizer,

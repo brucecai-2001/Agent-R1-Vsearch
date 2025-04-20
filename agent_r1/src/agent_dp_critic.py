@@ -212,8 +212,9 @@ class DataParallelPPOCritic(BasePPOCritic):
                     returns = data['returns']
                     response_length = responses.size(1)
 
-                    state_mask = attention_mask[:, -response_length - 1:-1]
-                    state_mask[:, 1:] = data['action_mask'][:, :-1]
+                    # state_mask = attention_mask[:, -response_length - 1:-1]
+                    # state_mask[:, 1:] = data['action_mask'][:, :-1]
+                    state_mask = data['action_mask']
                     vpreds = self._forward_micro_batch(data)
 
                     # assert not torch.any(torch.isnan(vpreds)).item()

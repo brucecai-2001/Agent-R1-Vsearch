@@ -23,4 +23,4 @@ def _default_tools(env):
     elif env == 'python':
         return [PythonTool()]
     else:
-        raise NotImplementedError
+        return []

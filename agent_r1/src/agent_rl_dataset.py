@@ -155,6 +155,7 @@ class ToolRLDataset(RLHFDataset):
                 image_grid_thw=image_grid_thw,
                 attention_mask=attention_mask[0],
             )  # (3, seq_len)
+            position_ids = [position_ids]
         else:
             position_ids = compute_position_id_with_mask(attention_mask)
 
