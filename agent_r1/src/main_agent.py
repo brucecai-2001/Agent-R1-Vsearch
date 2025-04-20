@@ -71,6 +71,8 @@ class RewardManager():
             sequences_str = self.tokenizer.decode(sequences, skip_special_tokens=False)
             pad_token_id = self.tokenizer.pad_token_id
             sequences_str = sequences_str.split(self.tokenizer.decode([pad_token_id]))[0]
+            if not sequences_str.endswith(self.tokenizer.eos_token):
+                sequences_str += self.tokenizer.eos_token
 
             ground_truth = data_item.non_tensor_batch['reward_model']['ground_truth']
 

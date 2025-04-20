@@ -1170,8 +1170,8 @@ class RayAgentTrainer(object):
         # Get token patterns for tool responses
         # tool_response_start = self.config.tool.tool_response_start
         # tool_response_end = self.config.tool.tool_response_end
-        tool_response_start = "\n<|im_start|>user\n<tool_response>"
-        tool_response_end = "</tool_response><|im_end|>\n<|im_start|>assistant\n"
+        tool_response_start = "<|im_end|>\n<|im_start|>user\n<tool_response>"
+        tool_response_end = "</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
         
         # Decode each response to find tool response ranges
         responses = [self.tokenizer.decode(resp, skip_special_tokens=False) for resp in batch.batch['responses']]

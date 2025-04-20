@@ -211,7 +211,7 @@ tool:
   tool_response_start: <tool_response>
   tool_response_end: </tool_response>
   tool_custom_response_template: |
-
+    <|im_end|>
     <|im_start|>user
     <tool_response>
     {tool_response}

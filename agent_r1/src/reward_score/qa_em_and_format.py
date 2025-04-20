@@ -89,7 +89,7 @@ def compute_score_format(solution_str):
         format_reward = 0.0
         
         # If no blocks found, return 0
-        if not assistant_blocks:
+        if not assistant_blocks or len(assistant_blocks) == 0:
             return 0.0
         
         # Perfect format requires at least one assistant block and matching tool blocks if tool calls exist
@@ -103,11 +103,10 @@ def compute_score_format(solution_str):
                     format_reward += 0.5
 
         # Check the last assistant block contains <answer> tags
-        if assistant_blocks:  # 确保有至少一个assistant块
-            last_assistant_block = assistant_blocks[-1]
-            think_answer_match = re.search(r'^<think>(.*?)</think>\n<answer>(.*?)</answer>$', last_assistant_block, re.DOTALL)
-            if think_answer_match:
-                format_reward += 0.5
+        last_assistant_block = assistant_blocks[-1]
+        think_answer_match = re.search(r'^<think>(.*?)</think>\n<answer>(.*?)</answer>$', last_assistant_block, re.DOTALL)
+        if think_answer_match:
+            format_reward += 0.5
     except Exception as e:
         print(f"[DEBUG] Error in compute_score_format: {e}")
         return 0.0

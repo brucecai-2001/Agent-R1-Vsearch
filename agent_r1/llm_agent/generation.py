@@ -80,11 +80,11 @@ class ToolGenerationManager:
             match = re.search(tool_pattern, resp, re.DOTALL)
             
             if not match:
-                return resp + self.tokenizer.eos_token, False  # No tool call found
+                return resp, False  # No tool call found
             
             resp = resp.split(self.config.tool_call_end)[0] + self.config.tool_call_end
             
-            return resp + self.tokenizer.eos_token, True
+            return resp, True
         
         # Process each response string
         return [process_single_response(resp)[0] for resp in responses_str], [process_single_response(resp)[1] for resp in responses_str]
@@ -92,9 +92,11 @@ class ToolGenerationManager:
     def _postprocess_responses(self, responses: torch.Tensor) -> torch.Tensor:
         """Process responses to extract tool calls."""
         responses_str = self.tokenizer.batch_decode(
-            responses, 
-            skip_special_tokens=True
+            responses[:, :self.config.max_response_length_single_turn], 
+            skip_special_tokens=False
         )
+
+        responses_str = [response.split(self.tokenizer.pad_token)[0] for response in responses_str]
 
         # Extract the first tool call from each response
         responses_str, active_masks = self._process_tool_call(responses_str)
@@ -110,9 +112,9 @@ class ToolGenerationManager:
             return_tensors='pt'
         )['input_ids']
         
-        if tool_responses_ids.shape[1] > self.config.max_tool_response_length:
-            print("[WARNING] TOOL RESPONSE TOO LONG, CONSIDER CHANGING YOUR CONFIG")
-            tool_responses_ids = tool_responses_ids[:, :self.config.max_tool_response_length]
+        # if tool_responses_ids.shape[1] > self.config.max_tool_response_length:
+        #     print("[WARNING] TOOL RESPONSE TOO LONG, CONSIDER CHANGING YOUR CONFIG")
+        #     tool_responses_ids = tool_responses_ids[:, :self.config.max_tool_response_length]
             
         return tool_responses_ids
     
@@ -223,11 +225,11 @@ class ToolGenerationManager:
         responses_ids = self._batch_tokenize(responses)
 
         if "responses" not in rollings.batch.keys():
-            rollings.batch['responses'] = responses_ids[:, :self.config.max_response_length_single_turn]
+            rollings.batch['responses'] = responses_ids
         else:
             rollings.batch['responses'] = self.tensor_fn.concatenate_with_padding([
                 rollings.batch['responses'],
-                responses_ids[:, :self.config.max_response_length_single_turn]
+                responses_ids
             ], pad_to_left=False)
 
         rollings.batch['responses'] = rollings.batch['responses'][:, :self.config.max_response_length]
@@ -283,10 +285,6 @@ class ToolGenerationManager:
         for raw_prompt_id, raw_prompt in zip(raw_prompt_ids, raw_prompts):
             if len(raw_prompt) > 0:
                 new_raw_prompt_id = self.tokenizer.encode(raw_prompt, add_special_tokens=False)
-                if len(new_raw_prompt_id) > self.config.max_response_length_single_turn:
-                    print(f"[WARNING] RESPONSE TOO LONG ({len(new_raw_prompt_id)}/{self.config.max_response_length_single_turn}), TRUNCATED: {raw_prompt}")
-                    new_raw_prompt_id = new_raw_prompt_id[:self.config.max_response_length_single_turn]
-                # Create a new list instead of extending the existing one
                 new_raw_prompt_ids.append(raw_prompt_id + new_raw_prompt_id)
             else:
                 new_raw_prompt_ids.append(raw_prompt_id)
@@ -320,7 +318,7 @@ class ToolGenerationManager:
                 active_mask[length_exceeded] = 0
 
             raw_prompt_ids = rollings.non_tensor_batch['raw_prompt_ids']
-            length_exceeded = [len(prompt_id) > self.config.max_response_length for prompt_id in raw_prompt_ids]
+            length_exceeded = [len(prompt_id) > self.config.max_prompt_length for prompt_id in raw_prompt_ids]
             if any(length_exceeded):
                 print("[WARNING] SEQUENCE LENGTH EXCEEDED MAX PROMPT LENGTH")
                 for prompt_id, length_exceeded_ in zip(raw_prompt_ids, length_exceeded):
@@ -348,11 +346,6 @@ class ToolGenerationManager:
                         k: v[active_mask] for k, v in rollings.batch.items()
                     },
                 )
-
-            # rollings_active.batch = self.tensor_fn.cut_to_effective_len(
-            #     rollings_active.batch,
-            #     keys=['input_ids', 'attention_mask', 'position_ids']
-            # )
 
             rollings_active, pad_size = pad_dataproto_to_divisor(rollings_active, self.actor_rollout_wg.world_size)
             gen_output = self.actor_rollout_wg.generate_sequences(rollings_active)
