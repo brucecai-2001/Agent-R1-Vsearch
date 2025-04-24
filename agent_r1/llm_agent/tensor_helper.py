@@ -74,16 +74,44 @@ class TensorHelper:
         padded_tensor = self.convert_pad_structure(concatenated, pad_to_left)
         return padded_tensor
 
+    # def _example_level_pad(self, responses_str: List[str],
+    #                        active_mask: torch.Tensor) -> Tuple[torch.Tensor, List[str]]:
+    #     """
+    #     Pad responses for non-active examples with pad tokens.
+    #     """
+    #     # Create masked responses tensor
+    #     batch_size = active_mask.shape[0]
+         
+    #     # Create masked response strings
+    #     padded_responses_str = [""] * batch_size
+        
+    #     s = 0
+    #     for i, is_active in enumerate(active_mask):
+    #         if is_active:
+    #             padded_responses_str[i] = responses_str[s]
+    #             s += 1
+    
+    #     return padded_responses_str
+    
     def _example_level_pad(self, responses_str: List[str],
+                           responses_ids: torch.Tensor, 
                            active_mask: torch.Tensor) -> Tuple[torch.Tensor, List[str]]:
         """
         Pad responses for non-active examples with pad tokens.
         """
+        assert active_mask.sum() == responses_ids.shape[0]
         # Create masked responses tensor
         batch_size = active_mask.shape[0]
+        seq_len = responses_ids.shape[1]
+        padded_responses_ids = torch.full(
+            (batch_size, seq_len), self.config.pad_token_id,
+            dtype=responses_ids.dtype, device=responses_ids.device
+        )
+        padded_responses_ids[active_mask] = responses_ids
          
         # Create masked response strings
         padded_responses_str = [""] * batch_size
+
         
         s = 0
         for i, is_active in enumerate(active_mask):
@@ -91,4 +119,4 @@ class TensorHelper:
                 padded_responses_str[i] = responses_str[s]
                 s += 1
     
-        return padded_responses_str
+        return padded_responses_str, padded_responses_ids

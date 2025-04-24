@@ -1158,49 +1158,55 @@ class RayAgentTrainer(object):
         """
         response_length = batch.batch['responses'].shape[-1]
         response_mask = batch.batch['attention_mask'][:, -response_length:]
+
+        if "action_mask" not in batch.batch.keys():
+            
+            # Initialize action mask with the response mask
+            action_mask = response_mask.clone()
+            
+            # If tools aren't configured, return the full mask
+            if not hasattr(self.config, 'tool'):
+                batch.batch['action_mask'] = action_mask
+                return batch, metrics
         
-        # Initialize action mask with the response mask
-        action_mask = response_mask.clone()
-        
-        # If tools aren't configured, return the full mask
-        if not hasattr(self.config, 'tool'):
+            # Get token patterns for tool responses
+            # tool_response_start = self.config.tool.tool_response_start
+            # tool_response_end = self.config.tool.tool_response_end
+            tool_response_start = "<|im_end|>\n<|im_start|>user\n<tool_response>"
+            tool_response_end = "</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
+            
+            # Decode each response to find tool response ranges
+            responses = [self.tokenizer.decode(resp, skip_special_tokens=False) for resp in batch.batch['responses']]
+            
+            for i, response in enumerate(responses):
+                # Find all tool response sections
+                start_pos = 0
+                while True:
+                    start_idx = response.find(tool_response_start, start_pos)
+                    if start_idx == -1:
+                        break
+                    
+                    end_idx = response.find(tool_response_end, start_idx)
+                    if end_idx == -1:
+                        break
+                    
+                    # Convert character positions to token positions
+                    start_text = response[:start_idx]
+                    tool_section = response[start_idx:end_idx + len(tool_response_end)]
+                    
+                    # Get token positions
+                    start_token_pos = len(self.tokenizer.encode(start_text, add_special_tokens=False))
+                    tool_section_length = len(self.tokenizer.encode(tool_section, add_special_tokens=False))
+                    
+                    # Mask tool response tokens (set to 0)
+                    if start_token_pos < response_length and start_token_pos + tool_section_length <= response_length:
+                        action_mask[i, start_token_pos:start_token_pos + tool_section_length] = 0
+                    
+                    start_pos = end_idx + len(tool_response_end)
+            
             batch.batch['action_mask'] = action_mask
-            return batch, metrics
-        
-        # Get token patterns for tool responses
-        # tool_response_start = self.config.tool.tool_response_start
-        # tool_response_end = self.config.tool.tool_response_end
-        tool_response_start = "<|im_end|>\n<|im_start|>user\n<tool_response>"
-        tool_response_end = "</tool_response><|im_end|>\n<|im_start|>assistant\n<think>"
-        
-        # Decode each response to find tool response ranges
-        responses = [self.tokenizer.decode(resp, skip_special_tokens=False) for resp in batch.batch['responses']]
-        
-        for i, response in enumerate(responses):
-            # Find all tool response sections
-            start_pos = 0
-            while True:
-                start_idx = response.find(tool_response_start, start_pos)
-                if start_idx == -1:
-                    break
-                
-                end_idx = response.find(tool_response_end, start_idx)
-                if end_idx == -1:
-                    break
-                
-                # Convert character positions to token positions
-                start_text = response[:start_idx]
-                tool_section = response[start_idx:end_idx + len(tool_response_end)]
-                
-                # Get token positions
-                start_token_pos = len(self.tokenizer.encode(start_text, add_special_tokens=False))
-                tool_section_length = len(self.tokenizer.encode(tool_section, add_special_tokens=False))
-                
-                # Mask tool response tokens (set to 0)
-                if start_token_pos < response_length and start_token_pos + tool_section_length <= response_length:
-                    action_mask[i, start_token_pos:start_token_pos + tool_section_length] = 0
-                
-                start_pos = end_idx + len(tool_response_end)
+        else:
+            action_mask = batch.batch['action_mask']
         
         # Log what percentage of tokens are actions vs external interactions
         action_ratio = action_mask.sum().item() / (response_mask.sum().item() + 1e-8)
@@ -1209,5 +1215,4 @@ class RayAgentTrainer(object):
         metrics['action/length/min'] = action_mask.sum(dim=-1).min().item()
         metrics['action/length/mean'] = action_mask.sum(dim=-1).float().mean().item()
         
-        batch.batch['action_mask'] = action_mask
         return batch, metrics

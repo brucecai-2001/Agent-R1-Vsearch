@@ -147,14 +147,8 @@ def compute_gae_advantage_return(token_level_rewards: torch.Tensor, values: torc
         lastgaelam = 0
         advantages_reversed = []
 
-        print(f"[DEBUG] example token_level_rewards: {token_level_rewards[0]}")
-        print(f"[DEBUG] example action_mask: {action_mask[0]}")
-
         extracted_rewards, lengths, indices = extract_and_pad_by_mask(token_level_rewards, action_mask)
         extracted_values, _, _ = extract_and_pad_by_mask(values, action_mask)
-
-        print(f"[DEBUG] example extracted_rewards: {extracted_rewards[0]}")
-        print(f"[DEBUG] example extracted_values: {extracted_values[0]}")
 
         max_length = max(lengths)
 
