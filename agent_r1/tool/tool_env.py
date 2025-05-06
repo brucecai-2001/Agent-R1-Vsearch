@@ -11,7 +11,7 @@ from copy import deepcopy
 from agent_r1.tool.tool_base import Tool
 
 # Independent step function
-def step(env: 'ToolEnv', action_text: str):
+def step(env: 'ToolEnv', action_text: str, multi_modal_data = None, ground_truth_tool = None):
     """
     Execute one step of environment interaction
     
@@ -72,8 +72,8 @@ def step(env: 'ToolEnv', action_text: str):
     
     # Execute tool
     try:
-        result = tool.execute(tool_args)
-        reward = tool.calculate_reward(tool_args, result)
+        result = tool.execute(tool_args, multi_modal_data)
+        reward = tool.calculate_reward(tool_args, result, ground_truth_tool)
         
         # Record tool call history
         env.tool_history.append({

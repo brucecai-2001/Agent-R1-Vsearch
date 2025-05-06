@@ -153,7 +153,9 @@ class ToolGenerationManager:
     
     def _execute_tool_calls(self, response_strs: List[str], 
                           envs: List[ToolEnv], 
-                          active_mask: torch.Tensor) -> List[str]:
+                          active_mask: torch.Tensor,
+                          multi_modal_data_batch = None,
+                          ground_truth_tool_batch = None) -> List[str]:
         """Execute tool calls sequentially and return tool responses."""
         # Convert torch tensor to list of booleans if needed
         active_list = active_mask.tolist() if isinstance(active_mask, torch.Tensor) else active_mask
@@ -162,12 +164,12 @@ class ToolGenerationManager:
         tool_responses = [""] * len(response_strs)
         tool_response_images = [None] * len(response_strs)
         # Process each environment sequentially
-        for i, (resp, env, active) in enumerate(zip(response_strs, envs, active_list)):
+        for i, (resp, env, active, multi_modal_data, ground_truth_tool) in enumerate(zip(response_strs, envs, active_list, multi_modal_data_batch, ground_truth_tool_batch)):
             if not active:
                 continue
                 
             # Step the environment using the agent's response
-            result = step(env, resp)
+            result = step(env, resp, multi_modal_data, ground_truth_tool)
             tool_response = result[0]['content']  # Extract observation from (observation, reward, done, info)
             tool_response_images[i] = result[0]['image']
             tool_responses[i] = self.config.tool_custom_response_template.format(tool_response=tool_response)            
@@ -371,7 +373,7 @@ class ToolGenerationManager:
 
         return rollings
     
-    def run_llm_loop(self, gen_batch, envs: List[Any] = None) -> Tuple[Dict, Dict]:
+    def run_llm_loop(self, gen_batch, envs: List[Any] = None, ground_truth_tool_batch = None) -> Tuple[Dict, Dict]:
         """Run main LLM generation loop."""
 
         batch_size = gen_batch.batch['input_ids'].shape[0]
@@ -381,7 +383,8 @@ class ToolGenerationManager:
         active_num_list = [active_mask.sum().item()]
         rollings = gen_batch
         prompts = gen_batch.batch['input_ids'][:, -self.config.max_prompt_length:].clone()
-
+        multi_modal_data_batch = gen_batch.non_tensor_batch['multi_modal_data']
+        
         # Main generation loop
         for _ in range(self.config.max_turns):
             if not active_mask.sum():
@@ -441,7 +444,7 @@ class ToolGenerationManager:
                 tool_responses, tool_responses_images = self._execute_tool_calls_batch(responses_str, envs, active_mask)
             else:
                 # Use sequential execution for tool calls
-                tool_responses, tool_responses_images = self._execute_tool_calls(responses_str, envs, active_mask)
+                tool_responses, tool_responses_images = self._execute_tool_calls(responses_str, envs, active_mask, multi_modal_data_batch, ground_truth_tool_batch)
 
             active_num_list.append(active_mask.sum().item())
 

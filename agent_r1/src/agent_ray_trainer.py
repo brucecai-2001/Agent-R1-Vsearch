@@ -982,6 +982,9 @@ class RayAgentTrainer(object):
                 batch = batch.repeat(repeat_times=self.config.actor_rollout_ref.rollout.n_repeat, interleave=True)
 
                 envs = [self.env.copy() for _ in range(len(batch))]
+
+                # ground truth too call for calculating the rewards
+                ground_truth_tool_batch = batch.non_tensor_batch['reward_model']['ground_truth_tools']
                 
                 # pop those keys for generation
                 if 'multi_modal_inputs' in batch.non_tensor_batch.keys():
@@ -1002,6 +1005,7 @@ class RayAgentTrainer(object):
                         final_gen_batch_output = generation_manager.run_llm_loop(
                             gen_batch=gen_batch,
                             envs=envs,
+                            ground_truth_tool_batch=ground_truth_tool_batch
                         )
 
                     for key in final_gen_batch_output.batch.keys():
