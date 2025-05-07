@@ -9,8 +9,8 @@ from PIL import Image
 
 if __name__ == '__main__':
     data_source = "vstar"
-    local_dir = "/Users/caixinyu/datasets/vstar"
-    questions_path = "/Users/caixinyu/datasets/vstar/question.jsonl"
+    local_dir = "dataset/vstar"
+    questions_path = "dataset/vstar/question.jsonl"
 
     # read the questions
     questions = []
@@ -95,11 +95,12 @@ The image's height:{height}
     # Process each data item
     def make_map_fn(split):
         def process_fn(example, idx):
-            image = Image.open(example.pop('image'))
+            img_path = example.pop('image')
+            image = Image.open(img_path)
             w, h = image.width, image.height
-            instruction_following= instruction_following.format(width=w, height=h)
+            instruction_following_ = instruction_following.format(width=w, height=h)
             question_raw = example.pop('question')
-            question = instruction_following + "Question: " + question_raw
+            question = instruction_following_ + "Question: " + question_raw
             answer_raw = example.pop('answer')
 
             # Convert all data to string format to avoid type issues
@@ -123,7 +124,7 @@ The image's height:{height}
                     'level': str(example.get('level', '')),
                     'type': str(example.get('type', ''))
                 },
-                "images": [example.pop('image')]
+                "images": [img_path]
             }
             
             return data
