@@ -1,5 +1,5 @@
 export VLLM_ATTENTION_BACKEND=XFORMERS
-export BASE_MODEL='models/Qwen2.5-VL-3B'
+export BASE_MODEL='/root/models/Qwen2.5-VL-3B'
 export PROJECT_NAME='o3_visual_search'
 export EXPERIMENT_NAME='train_01'
 export HYDRA_FULL_ERROR=1
