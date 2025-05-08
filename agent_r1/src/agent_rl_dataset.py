@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
 from typing import List, Union, Optional
 import pandas as pd
 from collections import defaultdict
@@ -47,28 +48,32 @@ def collate_fn(data_list: list[dict]) -> dict:
     return {**tensors, **non_tensors}
 
 
-def process_image(image: dict, max_pixels: int = 2048 * 2048, min_pixels: int = 512 * 512):
+def process_image(image: dict | str, max_pixels: int = 2048 * 2048, min_pixels: int = 256 * 256):
     import math
     from io import BytesIO
     from PIL import Image
 
     if isinstance(image, dict):
         image = Image.open(BytesIO(image['bytes']))
+    
+    if isinstance(image, str):
+        image = Image.open(image)
 
-    if (image.width * image.height) > max_pixels:
-        resize_factor = math.sqrt(max_pixels / (image.width * image.height))
-        width, height = int(image.width * resize_factor), int(image.height * resize_factor)
-        image = image.resize((width, height))
+    # if (image.width * image.height) > max_pixels:
+    #     resize_factor = math.sqrt(max_pixels / (image.width * image.height))
+    #     width, height = int(image.width * resize_factor), int(image.height * resize_factor)
+    #     image = image.resize((width, height))
 
-    if (image.width * image.height) < min_pixels:
-        resize_factor = math.sqrt(min_pixels / (image.width * image.height))
-        width, height = int(image.width * resize_factor), int(image.height * resize_factor)
-        image = image.resize((width, height))
+    # if (image.width * image.height) < min_pixels:
+    #     resize_factor = math.sqrt(min_pixels / (image.width * image.height))
+    #     width, height = int(image.width * resize_factor), int(image.height * resize_factor)
+    #     image = image.resize((width, height))
 
     if image.mode != 'RGB':
         image = image.convert('RGB')
 
     return image
+
 
 class ToolRLDataset(RLHFDataset):
     """
@@ -110,7 +115,8 @@ class ToolRLDataset(RLHFDataset):
         is_multi_modal = self.image_key in row_dict
         if is_multi_modal:  # expand image token
             raw_prompt = prompt_with_chat_template.replace('<image>', '<|vision_start|><|image_pad|><|vision_end|>')
-            row_dict['multi_modal_data'] = {'image': [process_image(image) for image in row_dict.pop(self.image_key)]}
+            images = [process_image(image) for image in row_dict.pop(self.image_key)]
+            row_dict['multi_modal_data'] = {'image': images}
             image_inputs = self.processor.image_processor(row_dict['multi_modal_data']['image'], return_tensors='pt')
             image_grid_thw = image_inputs['image_grid_thw']
             row_dict['multi_modal_inputs'] = {key: val for key, val in image_inputs.items()}
@@ -129,15 +135,25 @@ class ToolRLDataset(RLHFDataset):
 
                 prompt_with_chat_template = prompt_with_chat_template.replace('<|placeholder|>',
                                                                               self.processor.image_token)
+
+            model_inputs = self.processor(text=[raw_prompt], images=images, return_tensors="pt")
+            input_ids = model_inputs.pop("input_ids")
+            attention_mask = model_inputs.pop("attention_mask")
+
         else:
             raw_prompt = prompt_with_chat_template
+            model_inputs = self.tokenizer(raw_prompt, return_tensors="pt", add_special_tokens=False)
+            input_ids = model_inputs.pop("input_ids")
+            attention_mask = model_inputs.pop("attention_mask")
         
-        input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
-                                                                         tokenizer=self.tokenizer,
-                                                                         max_length=self.max_prompt_length,
-                                                                         pad_token_id=self.tokenizer.pad_token_id,
-                                                                         left_pad=True,
-                                                                         truncation=self.truncation)
+        input_ids, attention_mask = verl_F.postprocess_data(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_length=self.max_prompt_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=True,
+            truncation=self.truncation,
+        )
 
         if is_multi_modal:
             from verl.models.transformers.qwen2_vl import get_rope_index

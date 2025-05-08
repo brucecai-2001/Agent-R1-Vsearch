@@ -10,59 +10,111 @@ from PIL import Image
 if __name__ == '__main__':
     data_source = "vstar"
     local_dir = "dataset/vstar"
-    questions_path = "dataset/vstar/question.jsonl"
+    val_questions_path = "dataset/vstar/question.jsonl"
 
-    # read the questions
     questions = []
-    with open(questions_path, 'r', encoding='utf-8') as file:
+    visited = []
+
+    # read the train questions
+    q_a = {}
+
+    with open(val_questions_path, 'r', encoding='utf-8') as file:
         for line in file:
             q = json.loads(line)
             category = q['category']
             if category == 'relative_position':
                 continue
             
-            # read the gt bbox
-            label = None
-            data_label_path = os.path.join(local_dir, q['image']).replace('.jpg', '.json')
-            with open(data_label_path, 'r', encoding='utf-8') as json_file:
+            img_pth = q['image']
+
+            label_name = img_pth.split('.')[0] + '.json'
+            label_pth = local_dir + '/' + label_name
+            
+            visited.append(img_pth.split('/')[1])
+            
+            with open(label_pth, 'r', encoding='utf-8') as json_file:
                 label = json.load(json_file)
-        
-            # build data
-            data = {
-                "question": q['text'],
-                "answer": q['label'],
-                "bbox": label['bbox'],
-                "image": os.path.join(local_dir, q['image'])
-            }
-            questions.append(data)
+                data = {
+                            "question": q['text'],
+                            "answer": q['label'],
+                            "bbox": label['bbox'],
+                            "image": local_dir + '/' + img_pth
+                        }
+                questions.append(data)
     
-    # split the dataset and shuffle
-    data_num = len(questions)
-    train_size = 70
-    val_size = data_num - train_size
 
-    random.shuffle(questions)
-    train_question = questions[:train_size]
-    validation_question = questions[train_size:]
+    # read the train questions
+    for root, dirs, files in os.walk(local_dir):
+        for dir in dirs:
+            subfolder_path = local_dir + '/' + dir
+            
+            for root, dirs, files in os.walk(subfolder_path):
+                for file in files:
+                    if file.split('.')[1] == 'json':
+                        continue 
+                    
+                    if file in visited:
+                        continue
 
+                    label_name = file.split('.')[0] + '.json'
+                    label_pth = subfolder_path + '/' + label_name
+                    with open(label_pth, 'r', encoding='utf-8') as json_file:
+                        label = json.load(json_file)
+                        
+                        if dir == 'relative_position' and len(label['bbox']) != 1:
+                            continue
+
+                        options = label['options']
+                        shuffled_options = options.copy()
+                        # 打乱列表
+                        random.shuffle(shuffled_options)
+                        # 初始化字母
+                        letter = ord('A')
+                        # 用于存储添加字母后的元素
+                        new_list = []
+                        # 用于存储字母和元素的映射
+                        mapping = {}
+                        for item in shuffled_options:
+                            new_item = f"\n({chr(letter)}) {item}"
+                            new_list.append(new_item)
+                            mapping[item] = chr(letter)
+                            letter += 1
+                        # 找到原列表第一个元素在打乱后列表中的对应字母
+                        answer = options[0]
+                        answer_label = mapping.get(answer)
+
+                        question = label['question'] + "".join(new_list) + "Answer with the option's letter from the given choices directly."
+
+                        data = {
+                            "question": question,
+                            "answer": answer_label,
+                            "bbox": label['bbox'],
+                            "image": subfolder_path + '/' + file
+                        }
+                
+                        questions.append(data)
+
+    train_size = 150
+    train_questions = questions[:train_size]
+    eval_questions = questions[train_size:]
 
     # build huggingface dataset
     train_dataset = datasets.Dataset.from_dict({
-            'question': [item['question'] for item in train_question],
-            'answer': [item['answer'] for item in train_question],
-            'bbox': [item['bbox'] for item in train_question],
-            'image': [item['image'] for item in train_question],
-            'level': [str(item.get('level', '')) for item in train_question],
-            'type': [str(item.get('type', '')) for item in train_question]
+            'question': [item['question'] for item in train_questions],
+            'answer': [item['answer'] for item in train_questions],
+            'bbox': [item['bbox'] for item in train_questions],
+            'image': [item['image'] for item in train_questions],
+            'level': [str(item.get('level', '')) for item in train_questions],
+            'type': [str(item.get('type', '')) for item in train_questions]
     })
         
     validation_dataset = datasets.Dataset.from_dict({
-            'question': [item['question'] for item in validation_question],
-            'answer': [item['answer'] for item in validation_question],
-            'bbox': [item['bbox'] for item in validation_question],
-            'image': [item['image'] for item in validation_question],
-            'level': [str(item.get('level', '')) for item in validation_question],
-            'type': [str(item.get('type', '')) for item in validation_question]
+            'question': [item['question'] for item in eval_questions],
+            'answer': [item['answer'] for item in eval_questions],
+            'bbox': [item['bbox'] for item in eval_questions],
+            'image': [item['image'] for item in eval_questions],
+            'level': [str(item.get('level', '')) for item in eval_questions],
+            'type': [str(item.get('type', '')) for item in eval_questions]
     })
 
 
