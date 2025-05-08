@@ -410,14 +410,8 @@ class RayAgentTrainer(object):
         # TODO: we have to make sure the batch size is divisible by the dp size
         self.train_dataset = ToolRLDataset(parquet_files=self.config.data.train_files,
                                          tokenizer=self.tokenizer,
+                                         config = self.config,
                                          processor=self.processor,
-                                         prompt_key=self.config.data.prompt_key,
-                                         image_key=self.config.data.get('image_key', 'images'),
-                                         max_prompt_length=self.config.data.max_prompt_length,
-                                         filter_prompts=True,
-                                         return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                         truncation=self.config.data.get('truncation', 'error'),
-                                         filter_overlong_prompts=self.config.data.filter_overlong_prompts,
                                          tool_env=self.env,
                                          use_custom_tool_format_func=self.config.data.get('use_custom_tool_format_func', False))
         assert self.train_dataset.truncation == self.config.data.get(
@@ -440,14 +434,8 @@ class RayAgentTrainer(object):
 
         self.val_dataset = ToolRLDataset(parquet_files=self.config.data.val_files,
                                        tokenizer=self.tokenizer,
+                                       config = self.config,
                                        processor=self.processor,
-                                       prompt_key=self.config.data.prompt_key,
-                                       image_key=self.config.data.get('image_key', 'images'),
-                                       max_prompt_length=self.config.data.max_prompt_length,
-                                       filter_prompts=True,
-                                       return_raw_chat=self.config.data.get('return_raw_chat', False),
-                                       truncation=self.config.data.get('truncation', 'error'),
-                                       filter_overlong_prompts=self.config.data.filter_overlong_prompts,
                                        tool_env=self.val_env,
                                        use_custom_tool_format_func=self.config.data.get('use_custom_tool_format_func', False))
         assert self.val_dataset.truncation == self.config.data.get(

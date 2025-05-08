@@ -47,7 +47,7 @@ def collate_fn(data_list: list[dict]) -> dict:
     return {**tensors, **non_tensors}
 
 
-def process_image(image: dict, max_pixels: int = 2048 * 2048, min_pixels: int = 512 * 512):
+def process_image(image: dict | str, max_pixels: int = 2048 * 2048, min_pixels: int = 512 * 512):
     import math
     from io import BytesIO
     from PIL import Image
@@ -55,15 +55,19 @@ def process_image(image: dict, max_pixels: int = 2048 * 2048, min_pixels: int = 
     if isinstance(image, dict):
         image = Image.open(BytesIO(image['bytes']))
 
-    if (image.width * image.height) > max_pixels:
-        resize_factor = math.sqrt(max_pixels / (image.width * image.height))
-        width, height = int(image.width * resize_factor), int(image.height * resize_factor)
-        image = image.resize((width, height))
+    if isinstance(image, str):
+        image = Image.open(image)
 
-    if (image.width * image.height) < min_pixels:
-        resize_factor = math.sqrt(min_pixels / (image.width * image.height))
-        width, height = int(image.width * resize_factor), int(image.height * resize_factor)
-        image = image.resize((width, height))
+
+    # if (image.width * image.height) > max_pixels:
+    #     resize_factor = math.sqrt(max_pixels / (image.width * image.height))
+    #     width, height = int(image.width * resize_factor), int(image.height * resize_factor)
+    #     image = image.resize((width, height))
+
+    # if (image.width * image.height) < min_pixels:
+    #     resize_factor = math.sqrt(min_pixels / (image.width * image.height))
+    #     width, height = int(image.width * resize_factor), int(image.height * resize_factor)
+    #     image = image.resize((width, height))
 
     if image.mode != 'RGB':
         image = image.convert('RGB')
@@ -77,22 +81,15 @@ class ToolRLDataset(RLHFDataset):
     def __init__(self,
                  parquet_files: Union[str, List[str]],
                  tokenizer: PreTrainedTokenizer,
+                 config,
                  processor: Optional[ProcessorMixin] = None,
-                 prompt_key='prompt',
-                 image_key='images',
-                 max_prompt_length=1024,
-                 filter_prompts=True,
-                 cache_dir='~/.cache/verl/rlhf',
-                 chat_template_func=None,
-                 return_raw_chat=False,
-                 truncation='error',
-                 filter_overlong_prompts=False,
                  tool_env: ToolEnv = None,
                  use_custom_tool_format_func=False):
+        
         self.tool_env = tool_env
         self.tools = tool_env.tool_desc
         self.use_custom_tool_format_func = use_custom_tool_format_func
-        super().__init__(parquet_files, tokenizer, processor, prompt_key, image_key, max_prompt_length, filter_prompts, cache_dir, chat_template_func, return_raw_chat, truncation, filter_overlong_prompts)
+        super().__init__(parquet_files, tokenizer, config, processor)
 
     def __getitem__(self, item):
         """
@@ -117,7 +114,8 @@ class ToolRLDataset(RLHFDataset):
         is_multi_modal = self.image_key in row_dict
         if is_multi_modal:  # expand image token
             raw_prompt = prompt_with_chat_template.replace('<image>', '<|vision_start|><|image_pad|><|vision_end|>')
-            row_dict['multi_modal_data'] = {'image': [process_image(image) for image in row_dict.pop(self.image_key)]}
+            images = [process_image(image) for image in row_dict.pop(self.image_key)]
+            row_dict['multi_modal_data'] = {'image': images}
             image_inputs = self.processor.image_processor(row_dict['multi_modal_data']['image'], return_tensors='pt')
             image_grid_thw = image_inputs['image_grid_thw']
             row_dict['multi_modal_inputs'] = {key: val for key, val in image_inputs.items()}
@@ -136,15 +134,25 @@ class ToolRLDataset(RLHFDataset):
 
                 prompt_with_chat_template = prompt_with_chat_template.replace('<|placeholder|>',
                                                                               self.processor.image_token)
+
+            model_inputs = self.processor(text=[raw_prompt], images=images, return_tensors="pt")
+            input_ids = model_inputs.pop("input_ids")
+            attention_mask = model_inputs.pop("attention_mask")
+
         else:
             raw_prompt = prompt_with_chat_template
+            model_inputs = self.tokenizer(raw_prompt, return_tensors="pt", add_special_tokens=False)
+            input_ids = model_inputs.pop("input_ids")
+            attention_mask = model_inputs.pop("attention_mask")
         
-        input_ids, attention_mask = verl_F.tokenize_and_postprocess_data(prompt=prompt_with_chat_template,
-                                                                         tokenizer=self.tokenizer,
-                                                                         max_length=self.max_prompt_length,
-                                                                         pad_token_id=self.tokenizer.pad_token_id,
-                                                                         left_pad=True,
-                                                                         truncation=self.truncation)
+        input_ids, attention_mask = verl_F.postprocess_data(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            max_length=self.max_prompt_length,
+            pad_token_id=self.tokenizer.pad_token_id,
+            left_pad=True,
+            truncation=self.truncation,
+        )
 
         if is_multi_modal:
             from verl.models.transformers.qwen2_vl import get_rope_index
@@ -176,7 +184,7 @@ class ToolRLDataset(RLHFDataset):
     
     def _read_files_and_tokenize(self):
         dataframes = []
-        for parquet_file in self.parquet_files:
+        for parquet_file in self.data_files:
             # read parquet files and cache
             dataframe = pd.read_parquet(parquet_file)
             dataframes.append(dataframe)
