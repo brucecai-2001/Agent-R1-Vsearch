@@ -48,7 +48,7 @@ def collate_fn(data_list: list[dict]) -> dict:
     return {**tensors, **non_tensors}
 
 
-def process_image(image: dict | str, max_pixels: int = 2048 * 2048, min_pixels: int = 256 * 256):
+def process_image(image: dict | str, max_pixels: int = 512 * 512, min_pixels: int = 256 * 256):
     import math
     from io import BytesIO
     from PIL import Image
@@ -59,15 +59,15 @@ def process_image(image: dict | str, max_pixels: int = 2048 * 2048, min_pixels: 
     if isinstance(image, str):
         image = Image.open(image)
 
-    # if (image.width * image.height) > max_pixels:
-    #     resize_factor = math.sqrt(max_pixels / (image.width * image.height))
-    #     width, height = int(image.width * resize_factor), int(image.height * resize_factor)
-    #     image = image.resize((width, height))
+    if (image.width * image.height) > max_pixels:
+        resize_factor = math.sqrt(max_pixels / (image.width * image.height))
+        width, height = int(image.width * resize_factor), int(image.height * resize_factor)
+        image = image.resize((width, height))
 
-    # if (image.width * image.height) < min_pixels:
-    #     resize_factor = math.sqrt(min_pixels / (image.width * image.height))
-    #     width, height = int(image.width * resize_factor), int(image.height * resize_factor)
-    #     image = image.resize((width, height))
+    if (image.width * image.height) < min_pixels:
+        resize_factor = math.sqrt(min_pixels / (image.width * image.height))
+        width, height = int(image.width * resize_factor), int(image.height * resize_factor)
+        image = image.resize((width, height))
 
     if image.mode != 'RGB':
         image = image.convert('RGB')
@@ -149,10 +149,10 @@ class ToolRLDataset(RLHFDataset):
         input_ids, attention_mask = verl_F.postprocess_data(
             input_ids=input_ids,
             attention_mask=attention_mask,
-            max_length=self.max_prompt_length,
+            max_length=4096,
             pad_token_id=self.tokenizer.pad_token_id,
             left_pad=True,
-            truncation=self.truncation,
+            truncation='left',
         )
 
         if is_multi_modal:

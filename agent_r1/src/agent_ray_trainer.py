@@ -412,7 +412,7 @@ class RayAgentTrainer(object):
                                          tokenizer=self.tokenizer,
                                          config = self.config,
                                          processor=self.processor,
-                                         filter_prompts=True,
+                                         #filter_prompts=True,
                                          tool_env=self.env,
                                          use_custom_tool_format_func=self.config.data.get('use_custom_tool_format_func', False))
         assert self.train_dataset.truncation == self.config.data.get(
@@ -437,7 +437,7 @@ class RayAgentTrainer(object):
                                          tokenizer=self.tokenizer,
                                          config = self.config,
                                          processor=self.processor,
-                                         filter_prompts=True,
+                                         #filter_prompts=True,
                                          tool_env=self.env,
                                          use_custom_tool_format_func=self.config.data.get('use_custom_tool_format_func', False))
         
